@@ -2043,6 +2043,7 @@ export default function App() {
   );
 
   const RawDataView = () => {
+    const isSheet = activeTab === "sheet";
     const missing = model.derivedAccounts.filter((a: any) => !String(a.password || "").trim());
     const rows = model.derivedAccounts
       .filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true))
@@ -3488,6 +3489,7 @@ export default function App() {
     { id: "bookings", icon: BookOpen, label: "Bookings" },
     { id: "database", icon: Users, label: "Database" },
     { id: "rawdata", icon: Database, label: "RawData" },
+    { id: "sheet", icon: Sheet, label: "Sheet" },
     { id: "hotels", icon: Building2, label: "Hotels" },
     { id: "spent", icon: Wallet, label: "Spent" },
     { id: "reward", icon: Wallet, label: "Reward" },
@@ -3627,6 +3629,7 @@ export default function App() {
           {activeTab === "bookings" && <BookingsView />}
           {activeTab === "database" && <DatabaseView />}
           {activeTab === "rawdata" && <RawDataView />}
+          {activeTab === "sheet" && <RawDataView />}
           {activeTab === "hotels" && <HotelsView />}
           {activeTab === "spent" && <SpentView />}
           {activeTab === "reward" && <RewardView />}
