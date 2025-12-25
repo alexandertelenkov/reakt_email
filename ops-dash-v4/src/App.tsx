@@ -58,7 +58,12 @@ const COLORS = {
   plat: "#60A5FA",
 };
 
-const REWARD_TYPES = ["Booking", "Copa", "AA", "CC"] as const;
+const DEFAULT_REWARD_TYPES = [
+  { name: "Booking", days: 14 },
+  { name: "Copa", days: 64 },
+  { name: "AA", days: 64 },
+  { name: "CC", days: 64 },
+] as const;
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const uid = () => Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -231,14 +236,19 @@ function extractGeniusLevel(tailCells: string[]) {
   return "";
 }
 
-function normalizeRewardType(raw: any) {
+function getRewardTypes(settings?: any) {
+  const list = settings?.rewardTypes;
+  if (Array.isArray(list) && list.length > 0) return list;
+  return DEFAULT_REWARD_TYPES.map((r) => ({ ...r }));
+}
+
+function normalizeRewardType(raw: any, rewardTypes = DEFAULT_REWARD_TYPES) {
   const s = safeLower(raw);
   if (!s) return "Booking";
+  const hit = rewardTypes.find((t: any) => safeLower(t.name) === s);
+  if (hit) return hit.name;
   if (s === "booking") return "Booking";
-  if (s === "copa") return "Copa";
-  if (s === "aa") return "AA";
-  if (s === "cc") return "CC";
-  return "Booking";
+  return raw ? String(raw).trim() : "Booking";
 }
 
 function parseMoney(raw: any) {
@@ -265,8 +275,14 @@ function isISODateLike(x: any) {
 function computeRewardETA(b: any, settings: any) {
   const checkOut = String(b.checkOut || "").trim();
   if (!checkOut) return "";
-  const type = normalizeRewardType(b.rewardType || "Booking");
-  const days = type === "Booking" ? Number(settings.rewardDaysBooking || 14) : Number(settings.rewardDaysOther || 64);
+  const types = getRewardTypes(settings);
+  const type = normalizeRewardType(b.rewardType || "Booking", types);
+  const match = types.find((t: any) => safeLower(t.name) === safeLower(type));
+  const days = match
+    ? Number(match.days || 0)
+    : type === "Booking"
+    ? Number(settings.rewardDaysBooking || 14)
+    : Number(settings.rewardDaysOther || 64);
   return addDaysISO(checkOut, days);
 }
 
@@ -287,7 +303,7 @@ function leadTimeBucket(days: number | null) {
  * 2025-12-15    email@gmx.com    5051780387    6635        Hotel Name    6,066.89    2026-03-12    2026-03-13    120.00    confirmed    Genius Level 1
  * 2025-12-15    email@gmx.com    5051780387    6635        Hotel Name    6,066.89    2026-03-12    2026-03-13    120.00    confirmed    Genius Level 2    Copa    2026-05-20
  */
-function parseBookingLine(line: string) {
+function parseBookingLine(line: string, rewardTypes = DEFAULT_REWARD_TYPES) {
   const raw = (line || "").trim();
   if (!raw) return null;
   const parts = raw.split("\t").map((x) => (x ?? "").trim());
@@ -339,8 +355,8 @@ function parseBookingLine(line: string) {
       rewardPaidOn = tok;
       continue;
     }
-    const t = normalizeRewardType(tok);
-    if ((REWARD_TYPES as readonly string[]).includes(t) && safeLower(tok) === safeLower(t)) {
+    const t = normalizeRewardType(tok, rewardTypes);
+    if (rewardTypes.some((rt: any) => safeLower(rt.name) === safeLower(t))) {
       rewardType = t;
       continue;
     }
@@ -375,7 +391,7 @@ function parseBookingLine(line: string) {
   };
 }
 
-function parsePaste(text: string) {
+function parsePaste(text: string, rewardTypes = DEFAULT_REWARD_TYPES) {
   const lines = (text || "")
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -385,7 +401,7 @@ function parsePaste(text: string) {
   const errors: any[] = [];
 
   for (let i = 0; i < lines.length; i++) {
-    const row = parseBookingLine(lines[i]);
+    const row = parseBookingLine(lines[i], rewardTypes);
     if (row) parsed.push(row);
     else errors.push({ line: i + 1, raw: lines[i] });
   }
@@ -479,6 +495,7 @@ const SEED: any = {
     hotelTechBlockTotal: 3,
     rewardDaysBooking: 14,
     rewardDaysOther: 64,
+    rewardTypes: DEFAULT_REWARD_TYPES.map((r) => ({ ...r })),
     autoCreateFromImport: true,
     autoWriteTechBlocks: true,
   },
@@ -781,14 +798,14 @@ function runSelfTestsOnce() {
 
     const line2 =
       "2025-12-15\ta@b.com\t999\t0000\t74\tHotel\t100\t2026-03-12\t2026-03-13\t80\tcancelled\tGenius Level 2\tCopa\t2026-05-20";
-    const b2: any = parseBookingLine(line2);
+    const b2: any = parseBookingLine(line2, DEFAULT_REWARD_TYPES);
     console.assert(b2.rewardType === "Copa", "type should parse from tail");
     console.assert(b2.rewardPaidOn === "2026-05-20", "rewardPaidOn should parse ISO date");
     console.assert(b2.level === "Genius Level 2", "level should not get polluted by date/type");
 
     const line3 =
       "2025-12-15\ta@b.com\t777\t0000\t74\tHotel\t100\t2026-03-12\t2026-03-13\t80\tconfirmed\tGenius Level 3\tAA\tAmerican Airlines";
-    const b3: any = parseBookingLine(line3);
+    const b3: any = parseBookingLine(line3, DEFAULT_REWARD_TYPES);
     console.assert(b3.airline === "American Airlines", "airline should parse from tail");
 
     console.assert(
@@ -804,7 +821,7 @@ function runSelfTestsOnce() {
     console.assert(bad === null, "invalid line should return null");
 
     const paste = `${line}\n${line}`;
-    const p = parsePaste(paste);
+    const p = parsePaste(paste, DEFAULT_REWARD_TYPES);
     console.assert(p.parsed.length === 2, "parsePaste should parse 2 lines");
 
     const tsv = accountsToTSV([
@@ -1300,7 +1317,7 @@ export default function App() {
     let summary: any = null;
 
     setState((prev: any) => {
-      const { parsed, errors } = parsePaste(text);
+      const { parsed, errors } = parsePaste(text, getRewardTypes(prev.settings));
       const now = new Date().toISOString();
 
       const next = {
@@ -2286,7 +2303,11 @@ export default function App() {
         );
       })
       .filter((b: any) => (bookingStatusFilter === "ALL" ? true : b.status === bookingStatusFilter))
-      .filter((b: any) => (bookingTypeFilter === "ALL" ? true : normalizeRewardType(b.rewardType) === bookingTypeFilter))
+      .filter((b: any) =>
+        bookingTypeFilter === "ALL"
+          ? true
+          : normalizeRewardType(b.rewardType, getRewardTypes(state.settings)) === bookingTypeFilter
+      )
       .filter((b: any) => (bookingMissingPaidFilter ? !String(b.rewardPaidOn || "").trim() : true))
       .filter((b: any) => {
         if (!bookingMissingPasswordFilter) return true;
@@ -2392,8 +2413,8 @@ export default function App() {
                 className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700"
               >
                 <option value="ALL">Type: ALL</option>
-                {REWARD_TYPES.map((t) => (
-                  <option key={t} value={t}>{t}</option>
+                {getRewardTypes(state.settings).map((t: any) => (
+                  <option key={t.name} value={t.name}>{t.name}</option>
                 ))}
               </select>
 
@@ -2477,7 +2498,7 @@ export default function App() {
 
                       <td className="px-6 py-4">
                         <select
-                          value={normalizeRewardType(b.rewardType || "Booking")}
+                          value={normalizeRewardType(b.rewardType || "Booking", getRewardTypes(state.settings))}
                           onChange={(e) => {
                             const rewardType = (e.target as HTMLSelectElement).value;
                             setState((prev: any) => {
@@ -2491,8 +2512,8 @@ export default function App() {
                           }}
                           className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none"
                         >
-                          {REWARD_TYPES.map((t) => (
-                            <option key={t} value={t}>{t}</option>
+                          {getRewardTypes(state.settings).map((t: any) => (
+                            <option key={t.name} value={t.name}>{t.name}</option>
                           ))}
                         </select>
                       </td>
@@ -2999,8 +3020,6 @@ export default function App() {
             { k: "techBlockConsecutive", label: "Account TECH block streak", type: "number" },
             { k: "techBlockTotal", label: "Account TECH block total", type: "number" },
             { k: "hotelTechBlockTotal", label: "Hotel TECH block total", type: "number" },
-            { k: "rewardDaysBooking", label: "Reward days after CheckOut (Booking)", type: "number" },
-            { k: "rewardDaysOther", label: "Reward days after CheckOut (Copa/AA/CC)", type: "number" },
           ].map((x: any) => (
             <div key={x.k} className="border border-slate-200 rounded-xl p-4 bg-white">
               <div className="text-xs text-slate-500 font-bold uppercase">{x.label}</div>
@@ -3012,6 +3031,64 @@ export default function App() {
               />
             </div>
           ))}
+
+          <div className="border border-slate-200 rounded-xl p-4 bg-white md:col-span-2">
+            <div className="text-xs text-slate-500 font-bold uppercase mb-3">Booking Reward Types</div>
+            <div className="space-y-2">
+              {getRewardTypes(state.settings).map((t: any, idx: number) => (
+                <div key={`${t.name}-${idx}`} className="grid grid-cols-1 md:grid-cols-6 gap-2 items-center">
+                  <input
+                    value={t.name}
+                    onChange={(e) => {
+                      const name = (e.target as HTMLInputElement).value;
+                      setSettings({
+                        rewardTypes: getRewardTypes(state.settings).map((r: any, i: number) =>
+                          i === idx ? { ...r, name } : r
+                        ),
+                      });
+                    }}
+                    placeholder="Type name"
+                    className="md:col-span-3 bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-700 text-sm"
+                  />
+                  <input
+                    type="number"
+                    value={t.days}
+                    onChange={(e) => {
+                      const days = Number((e.target as HTMLInputElement).value);
+                      setSettings({
+                        rewardTypes: getRewardTypes(state.settings).map((r: any, i: number) =>
+                          i === idx ? { ...r, days } : r
+                        ),
+                      });
+                    }}
+                    placeholder="Days after CheckOut"
+                    className="md:col-span-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-700 text-sm"
+                  />
+                  <button
+                    onClick={() => {
+                      const next = getRewardTypes(state.settings).filter((_: any, i: number) => i !== idx);
+                      setSettings({ rewardTypes: next.length ? next : DEFAULT_REWARD_TYPES.map((r) => ({ ...r })) });
+                    }}
+                    className="md:col-span-1 px-3 py-2 rounded-lg border border-rose-200 text-rose-600 text-sm hover:bg-rose-50"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3">
+              <button
+                onClick={() => {
+                  setSettings({
+                    rewardTypes: [...getRewardTypes(state.settings), { name: "NewType", days: 64 }],
+                  });
+                }}
+                className="px-3 py-2 rounded-lg border border-blue-200 text-blue-600 text-sm hover:bg-blue-50"
+              >
+                Add Type
+              </button>
+            </div>
+          </div>
 
           <div className="border border-slate-200 rounded-xl p-4 bg-white">
             <div className="text-xs text-slate-500 font-bold uppercase">Auto-create from import</div>
