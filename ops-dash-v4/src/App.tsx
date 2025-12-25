@@ -613,20 +613,21 @@ function deriveModel(state: any) {
   }
 
   // Hotel stats
-  const hotelStats = new Map<string, { total: number; confirmed: number; cancelled: number; spent: number }>();
+  const hotelStats = new Map<string, { total: number; confirmed: number; cancelled: number; completed: number; spent: number }>();
   for (const b of bookings) {
     const id = b.hotelId || "";
     if (!id) continue;
-    if (!hotelStats.has(id)) hotelStats.set(id, { total: 0, confirmed: 0, cancelled: 0, spent: 0 });
+    if (!hotelStats.has(id)) hotelStats.set(id, { total: 0, confirmed: 0, cancelled: 0, completed: 0, spent: 0 });
     const st = hotelStats.get(id)!;
     st.total += 1;
     if (b.status === "Confirmed") st.confirmed += 1;
     if (b.status === "Cancelled") st.cancelled += 1;
+    if (b.status === "Completed") st.completed += 1;
     st.spent += Number(b.cost || 0);
   }
 
   const derivedHotels = hotels.map((h: any) => {
-    const st = hotelStats.get(h.hotelId) || { total: 0, confirmed: 0, cancelled: 0, spent: 0 };
+    const st = hotelStats.get(h.hotelId) || { total: 0, confirmed: 0, cancelled: 0, completed: 0, spent: 0 };
     const techBlocked = st.cancelled >= settings.hotelTechBlockTotal;
     const manualBlocked = h.manualStatus === "BLOCK";
     const isBlocked = manualBlocked || techBlocked;
@@ -635,6 +636,7 @@ function deriveModel(state: any) {
       totalBookings: st.total,
       confirmed: st.confirmed,
       cancelled: st.cancelled,
+      completed: st.completed,
       spent: st.spent,
       techBlocked,
       manualBlocked,
@@ -983,6 +985,12 @@ export default function App() {
   const [readySelected, setReadySelected] = useState<Record<string, boolean>>(() => ({}));
   const clearReadySelected = () => setReadySelected({});
   const [readyBalanceMin, setReadyBalanceMin] = useState("");
+  const [readySortKey, setReadySortKey] = useState<"balance" | "active" | "stat">("balance");
+  const [readySortDir, setReadySortDir] = useState<"asc" | "desc">("desc");
+  const [readyStatFilter, setReadyStatFilter] = useState<"ALL" | "NO_CANCEL" | "HAS_CANCEL">("ALL");
+  const [eligibleConfirmedMin, setEligibleConfirmedMin] = useState("");
+  const [eligibleCompletedMin, setEligibleCompletedMin] = useState("");
+  const [eligibleCancelledMax, setEligibleCancelledMax] = useState("");
 
   // RawData: show only emails without passwords
   const [rawOnlyMissing, setRawOnlyMissing] = useState(false);
@@ -995,6 +1003,8 @@ export default function App() {
   const [bookingEditMode, setBookingEditMode] = useState(false);
   const [bookingDupOpen, setBookingDupOpen] = useState(false);
   const [bookingDupRows, setBookingDupRows] = useState<any[]>([]);
+  const [bookingSortKey, setBookingSortKey] = useState("createdAt");
+  const [bookingSortDir, setBookingSortDir] = useState<"asc" | "desc">("desc");
 
   // Database filter
   const [dbOnlyMissing, setDbOnlyMissing] = useState(false);
@@ -2633,8 +2643,24 @@ export default function App() {
 
   const BookingsView = () => {
     const accountByEmail = new Map(model.derivedAccounts.map((a: any) => [a.emailKey, a]));
+    const sortBookingValue = (b: any) => {
+      switch (bookingSortKey) {
+        case "checkIn":
+          return parseDate(b.checkIn)?.getTime() || 0;
+        case "checkOut":
+          return parseDate(b.checkOut)?.getTime() || 0;
+        case "cost":
+          return Number(b.cost || 0);
+        case "rewardAmount":
+          return Number(b.rewardAmount || 0);
+        case "status":
+          return String(b.status || "");
+        case "createdAt":
+        default:
+          return parseDate(b.createdAt)?.getTime() || 0;
+      }
+    };
     const filtered = [...state.bookings]
-      .sort((a: any, b: any) => (parseDate(b.createdAt)?.getTime() || 0) - (parseDate(a.createdAt)?.getTime() || 0))
       .filter((b: any) => {
         if (!searchTerm) return true;
         const q = safeLower(searchTerm);
@@ -2656,6 +2682,16 @@ export default function App() {
         if (!bookingMissingPasswordFilter) return true;
         const account = accountByEmail.get(safeLower(b.email));
         return !String(account?.password || "").trim();
+      })
+      .sort((a: any, b: any) => {
+        const aVal = sortBookingValue(a);
+        const bVal = sortBookingValue(b);
+        if (typeof aVal === "string" || typeof bVal === "string") {
+          const diff = String(aVal).localeCompare(String(bVal));
+          return bookingSortDir === "asc" ? diff : -diff;
+        }
+        const diff = Number(aVal) - Number(bVal);
+        return bookingSortDir === "asc" ? diff : -diff;
       });
 
     return (
@@ -2738,6 +2774,24 @@ export default function App() {
             <div className="font-bold text-slate-900">Bookings Log (Google-like columns)</div>
             <div className="flex flex-wrap items-center gap-3 text-xs">
               <div className="text-slate-500">{filtered.length} / {state.bookings.length}</div>
+              <select
+                value={bookingSortKey}
+                onChange={(e) => setBookingSortKey((e.target as HTMLSelectElement).value)}
+                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700"
+              >
+                <option value="createdAt">Sort: Created</option>
+                <option value="checkIn">Sort: CheckIn</option>
+                <option value="checkOut">Sort: CheckOut</option>
+                <option value="cost">Sort: Cost</option>
+                <option value="rewardAmount">Sort: Reward</option>
+                <option value="status">Sort: Status</option>
+              </select>
+              <button
+                onClick={() => setBookingSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold"
+              >
+                {bookingSortDir === "asc" ? "▲" : "▼"}
+              </button>
               <select
                 value={bookingStatusFilter}
                 onChange={(e) => setBookingStatusFilter((e.target as HTMLSelectElement).value)}
@@ -3102,7 +3156,40 @@ export default function App() {
     const minBalance = readyBalanceMin ? Number(readyBalanceMin) : null;
     const readyList = model.accountsReady
       .filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true))
-      .filter((a: any) => (minBalance === null || Number.isNaN(minBalance) ? true : Number(a.netBalance || 0) >= minBalance));
+      .filter((a: any) => (minBalance === null || Number.isNaN(minBalance) ? true : Number(a.netBalance || 0) >= minBalance))
+      .filter((a: any) => {
+        if (readyStatFilter === "NO_CANCEL") return (a.cancelledBookings || 0) === 0;
+        if (readyStatFilter === "HAS_CANCEL") return (a.cancelledBookings || 0) > 0;
+        return true;
+      })
+      .sort((a: any, b: any) => {
+        const aStat = (a.positiveBookings || 0) - (a.cancelledBookings || 0);
+        const bStat = (b.positiveBookings || 0) - (b.cancelledBookings || 0);
+        const aVal =
+          readySortKey === "balance"
+            ? Number(a.netBalance || 0)
+            : readySortKey === "active"
+            ? Number(a.activeBookingsCount || 0)
+            : aStat;
+        const bVal =
+          readySortKey === "balance"
+            ? Number(b.netBalance || 0)
+            : readySortKey === "active"
+            ? Number(b.activeBookingsCount || 0)
+            : bStat;
+        const diff = aVal - bVal;
+        return readySortDir === "asc" ? diff : -diff;
+      });
+
+    const minEligibleConfirmed = eligibleConfirmedMin ? Number(eligibleConfirmedMin) : null;
+    const minEligibleCompleted = eligibleCompletedMin ? Number(eligibleCompletedMin) : null;
+    const maxEligibleCancelled = eligibleCancelledMax ? Number(eligibleCancelledMax) : null;
+    const eligibleHotels = model.hotelsEligible.filter((h: any) => {
+      if (minEligibleConfirmed !== null && !Number.isNaN(minEligibleConfirmed) && (h.confirmed || 0) < minEligibleConfirmed) return false;
+      if (minEligibleCompleted !== null && !Number.isNaN(minEligibleCompleted) && (h.completed || 0) < minEligibleCompleted) return false;
+      if (maxEligibleCancelled !== null && !Number.isNaN(maxEligibleCancelled) && (h.cancelled || 0) > maxEligibleCancelled) return false;
+      return true;
+    });
 
     const toggleOne = (emailKey: string) => {
       setReadySelected((prev) => {
@@ -3196,6 +3283,33 @@ export default function App() {
                   placeholder="0"
                   className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-24"
                 />
+              </div>
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                <span>Sort</span>
+                <select
+                  value={readySortKey}
+                  onChange={(e) => setReadySortKey((e.target as HTMLSelectElement).value as "balance" | "active" | "stat")}
+                  className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700"
+                >
+                  <option value="balance">Balance</option>
+                  <option value="active">Active</option>
+                  <option value="stat">Stat</option>
+                </select>
+                <button
+                  onClick={() => setReadySortDir((d) => (d === "asc" ? "desc" : "asc"))}
+                  className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600"
+                >
+                  {readySortDir === "asc" ? "▲" : "▼"}
+                </button>
+                <select
+                  value={readyStatFilter}
+                  onChange={(e) => setReadyStatFilter((e.target as HTMLSelectElement).value as "ALL" | "NO_CANCEL" | "HAS_CANCEL")}
+                  className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700"
+                >
+                  <option value="ALL">Stat: All</option>
+                  <option value="NO_CANCEL">No cancels</option>
+                  <option value="HAS_CANCEL">Has cancels</option>
+                </select>
               </div>
             </div>
           </div>
@@ -3311,14 +3425,34 @@ export default function App() {
               <h3 className="font-bold text-slate-900 text-lg">Hotels Eligible</h3>
               <p className="text-xs text-slate-500">Confirmed &gt; 0 • Cancelled ≤ 2 • Not blocked</p>
             </div>
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span>Min confirmed</span>
+              <input
+                value={eligibleConfirmedMin}
+                onChange={(e) => setEligibleConfirmedMin((e.target as HTMLInputElement).value)}
+                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
+              />
+              <span>Min completed</span>
+              <input
+                value={eligibleCompletedMin}
+                onChange={(e) => setEligibleCompletedMin((e.target as HTMLInputElement).value)}
+                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
+              />
+              <span>Max cancelled</span>
+              <input
+                value={eligibleCancelledMax}
+                onChange={(e) => setEligibleCancelledMax((e.target as HTMLInputElement).value)}
+                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
+              />
+            </div>
             <div className="bg-blue-500/10 text-blue-400 px-3 py-1 rounded-full text-xs font-bold border border-blue-500/20">
-              {model.hotelsEligible.length} Eligible
+              {eligibleHotels.length} Eligible
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">
             <table className="w-full text-left text-sm text-slate-500">
               <tbody className="divide-y divide-slate-200">
-                {model.hotelsEligible.map((h: any) => (
+                {eligibleHotels.map((h: any) => (
                   <tr key={h.hotelId} className="hover:bg-slate-50">
                     <td className="px-6 py-4">
                       <div className="text-slate-900 font-bold">{h.name}</div>
@@ -3328,6 +3462,8 @@ export default function App() {
                       <div className="text-xs">
                         <span className="text-emerald-400">{h.confirmed} Conf</span>
                         <span className="text-slate-600 mx-1">/</span>
+                        <span className="text-blue-400">{h.completed} Comp</span>
+                        <span className="text-slate-600 mx-1">/</span>
                         <span className="text-rose-400">{h.cancelled} Canc</span>
                         <span className="text-slate-600 mx-1">•</span>
                         <span className="text-slate-700">{h.totalBookings} total</span>
@@ -3335,7 +3471,7 @@ export default function App() {
                     </td>
                   </tr>
                 ))}
-                {model.hotelsEligible.length === 0 && (
+                {eligibleHotels.length === 0 && (
                   <tr>
                     <td colSpan={2} className="p-8 text-center text-slate-500">No hotels eligible yet. Нужно confirmed и low canc.</td>
                   </tr>
