@@ -321,7 +321,7 @@ function parseBookingLine(line: string, rewardTypes = DEFAULT_REWARD_TYPES) {
   const createdAt = parts[0] || "";
   const email = safeLower(parts[1] || "");
   const bookingNo = String(parts[2] || "");
-  const pin = String(parts[3] || "");
+  const pin = String(parts[3] || "").padStart(4, "0");
 
   const hotelId = String(parts[4] || "");
   const hotelName = parts[5] || "";
@@ -381,6 +381,7 @@ function parseBookingLine(line: string, rewardTypes = DEFAULT_REWARD_TYPES) {
     checkOut,
     promoCode,
     rewardAmount,
+    rewardCurrency: "USD",
     status,
     level,
     rewardType,
@@ -612,19 +613,20 @@ function deriveModel(state: any) {
   }
 
   // Hotel stats
-  const hotelStats = new Map<string, { total: number; confirmed: number; cancelled: number }>();
+  const hotelStats = new Map<string, { total: number; confirmed: number; cancelled: number; spent: number }>();
   for (const b of bookings) {
     const id = b.hotelId || "";
     if (!id) continue;
-    if (!hotelStats.has(id)) hotelStats.set(id, { total: 0, confirmed: 0, cancelled: 0 });
+    if (!hotelStats.has(id)) hotelStats.set(id, { total: 0, confirmed: 0, cancelled: 0, spent: 0 });
     const st = hotelStats.get(id)!;
     st.total += 1;
     if (b.status === "Confirmed") st.confirmed += 1;
     if (b.status === "Cancelled") st.cancelled += 1;
+    st.spent += Number(b.cost || 0);
   }
 
   const derivedHotels = hotels.map((h: any) => {
-    const st = hotelStats.get(h.hotelId) || { total: 0, confirmed: 0, cancelled: 0 };
+    const st = hotelStats.get(h.hotelId) || { total: 0, confirmed: 0, cancelled: 0, spent: 0 };
     const techBlocked = st.cancelled >= settings.hotelTechBlockTotal;
     const manualBlocked = h.manualStatus === "BLOCK";
     const isBlocked = manualBlocked || techBlocked;
@@ -633,6 +635,7 @@ function deriveModel(state: any) {
       totalBookings: st.total,
       confirmed: st.confirmed,
       cancelled: st.cancelled,
+      spent: st.spent,
       techBlocked,
       manualBlocked,
       isBlocked,
@@ -969,11 +972,17 @@ export default function App() {
   const [importError, setImportError] = useState("");
   const [importPayload, setImportPayload] = useState("");
   const [themeMode, setThemeMode] = useState<"dark" | "light">("dark");
+  const [trendDays, setTrendDays] = useState(30);
+  const [chainModalOpen, setChainModalOpen] = useState(false);
+  const [chainModalName, setChainModalName] = useState("");
+  const [bestHotelMode, setBestHotelMode] = useState<"cancellations" | "spend">("cancellations");
+  const [rewardModalEmail, setRewardModalEmail] = useState<string | null>(null);
 
   // Next Action UX: table mode + multi-select copy
   const [nextActionMode, setNextActionMode] = useState<"table" | "list">("table");
   const [readySelected, setReadySelected] = useState<Record<string, boolean>>(() => ({}));
   const clearReadySelected = () => setReadySelected({});
+  const [readyBalanceMin, setReadyBalanceMin] = useState("");
 
   // RawData: show only emails without passwords
   const [rawOnlyMissing, setRawOnlyMissing] = useState(false);
@@ -983,9 +992,15 @@ export default function App() {
   const [bookingTypeFilter, setBookingTypeFilter] = useState<string>("ALL");
   const [bookingMissingPaidFilter, setBookingMissingPaidFilter] = useState(false);
   const [bookingMissingPasswordFilter, setBookingMissingPasswordFilter] = useState(false);
+  const [bookingEditMode, setBookingEditMode] = useState(false);
+  const [bookingDupOpen, setBookingDupOpen] = useState(false);
+  const [bookingDupRows, setBookingDupRows] = useState<any[]>([]);
 
   // Database filter
   const [dbOnlyMissing, setDbOnlyMissing] = useState(false);
+  const [hotelConfirmedMin, setHotelConfirmedMin] = useState("");
+  const [hotelCancelledMax, setHotelCancelledMax] = useState("");
+  const [hotelTopRatedOnly, setHotelTopRatedOnly] = useState(false);
 
   const [toasts, setToasts] = useState<any[]>([]);
   const pushToast = (kind: "ok" | "warn" | "err", title: string, msg = "") => {
@@ -1099,7 +1114,7 @@ export default function App() {
   );
 
   const netTrend = useMemo(() => {
-    const days = 30;
+    const days = trendDays;
     const end = parseDate(todayISO())!;
     const map = new Map<string, { date: string; net: number }>();
     for (let i = days - 1; i >= 0; i--) {
@@ -1118,7 +1133,254 @@ export default function App() {
       if (map.has(key)) map.get(key)!.net -= Number(s.amount || 0);
     }
     return Array.from(map.values());
-  }, [state.bookings, state.sales]);
+  }, [state.bookings, state.sales, trendDays]);
+
+  const accountsByDay = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const acc of state.database) {
+      const date = String(acc.createdAt || "").slice(0, 10) || todayISO();
+      map.set(date, (map.get(date) || 0) + 1);
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, count]) => ({ date, count }));
+  }, [state.database]);
+
+  const rewardTrend = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const b of state.bookings) {
+      if (!Number(b.rewardAmount || 0)) continue;
+      const date = String(b.rewardPaidOn || b.createdAt || "").slice(0, 10);
+      if (!date) continue;
+      map.set(date, (map.get(date) || 0) + Number(b.rewardAmount || 0));
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, total]) => ({ date, total }));
+  }, [state.bookings]);
+
+  const spentTrend = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of state.sales) {
+      const date = String(s.date || "").slice(0, 10);
+      if (!date) continue;
+      map.set(date, (map.get(date) || 0) + Number(s.amount || 0));
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, total]) => ({ date, total }));
+  }, [state.sales]);
+
+  const chainStats = useMemo(() => {
+    const map = new Map<string, { total: number; cancelled: number }>();
+    for (const b of state.bookings) {
+      const chain = normalizeChainName(b.hotelNameSnapshot || b.hotelId || "");
+      if (!map.has(chain)) map.set(chain, { total: 0, cancelled: 0 });
+      const st = map.get(chain)!;
+      st.total += 1;
+      if (b.status === "Cancelled") st.cancelled += 1;
+    }
+    return Array.from(map.entries())
+      .map(([chain, st]) => ({
+        chain,
+        cancelled: st.cancelled,
+        other: st.total - st.cancelled,
+        total: st.total,
+      }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 12);
+  }, [state.bookings]);
+
+  const chainReliability = useMemo(() => {
+    return chainStats.map((c) => ({
+      ...c,
+      cancelRate: c.total ? Math.round((c.cancelled / c.total) * 100) : 0,
+    }));
+  }, [chainStats]);
+
+  const chainHotels = useMemo(() => {
+    const map = new Map<string, Map<string, { name: string; total: number; cancelled: number }>>();
+    for (const b of state.bookings) {
+      const chain = normalizeChainName(b.hotelNameSnapshot || b.hotelId || "");
+      if (!map.has(chain)) map.set(chain, new Map());
+      const hotelKey = b.hotelId || b.hotelNameSnapshot || "Unknown";
+      const hmap = map.get(chain)!;
+      if (!hmap.has(hotelKey)) hmap.set(hotelKey, { name: b.hotelNameSnapshot || b.hotelId || "Unknown", total: 0, cancelled: 0 });
+      const st = hmap.get(hotelKey)!;
+      st.total += 1;
+      if (b.status === "Cancelled") st.cancelled += 1;
+    }
+    const out: Record<string, any[]> = {};
+    for (const [chain, hmap] of map.entries()) {
+      out[chain] = Array.from(hmap.values())
+        .map((h) => ({ ...h, cancelRate: h.total ? Math.round((h.cancelled / h.total) * 100) : 0 }))
+        .sort((a, b) => a.cancelRate - b.cancelRate || b.total - a.total);
+    }
+    return out;
+  }, [state.bookings]);
+
+  const leadTimeStats = useMemo(() => {
+    const buckets = new Map<string, { total: number; cancelled: number }>();
+    for (const b of state.bookings) {
+      const lead = daysDiff(b.createdAt, b.checkIn);
+      const bucket = leadTimeBucket(lead);
+      if (!buckets.has(bucket)) buckets.set(bucket, { total: 0, cancelled: 0 });
+      const st = buckets.get(bucket)!;
+      st.total += 1;
+      if (b.status === "Cancelled") st.cancelled += 1;
+    }
+    return Array.from(buckets.entries()).map(([bucket, st]) => ({
+      bucket,
+      total: st.total,
+      cancelled: st.cancelled,
+      cancelRate: st.total ? Math.round((st.cancelled / st.total) * 100) : 0,
+    }));
+  }, [state.bookings]);
+
+  const promoStats = useMemo(() => {
+    const withPromo = { total: 0, cancelled: 0 };
+    const withoutPromo = { total: 0, cancelled: 0 };
+    for (const b of state.bookings) {
+      const hasPromo = String(b.promoCode || "").trim().length > 0;
+      const target = hasPromo ? withPromo : withoutPromo;
+      target.total += 1;
+      if (b.status === "Cancelled") target.cancelled += 1;
+    }
+    const withRate = withPromo.total ? Math.round((withPromo.cancelled / withPromo.total) * 100) : 0;
+    const withoutRate = withoutPromo.total ? Math.round((withoutPromo.cancelled / withoutPromo.total) * 100) : 0;
+    return { withPromo, withoutPromo, withRate, withoutRate };
+  }, [state.bookings]);
+
+  const bestHotels = useMemo(() => {
+    const map = new Map<string, { hotelId: string; name: string; total: number; cancelled: number }>();
+    for (const b of state.bookings) {
+      const key = b.hotelId || b.hotelNameSnapshot || "Unknown";
+      if (!map.has(key))
+        map.set(key, {
+          hotelId: b.hotelId || "",
+          name: b.hotelNameSnapshot || b.hotelId || "Unknown",
+          total: 0,
+          cancelled: 0,
+        });
+      const st = map.get(key)!;
+      st.total += 1;
+      if (b.status === "Cancelled") st.cancelled += 1;
+    }
+    return Array.from(map.values())
+      .map((h) => ({
+        ...h,
+        cancelRate: h.total ? Math.round((h.cancelled / h.total) * 100) : 0,
+      }))
+      .filter((h) => h.total >= 2)
+      .sort((a, b) => a.cancelRate - b.cancelRate || b.total - a.total)
+      .slice(0, 8);
+  }, [state.bookings]);
+
+  const bestHotelsBySpend = useMemo(() => {
+    const map = new Map<string, { name: string; total: number; cancelled: number; spent: number }>();
+    for (const b of state.bookings) {
+      const key = b.hotelId || b.hotelNameSnapshot || "Unknown";
+      if (!map.has(key)) map.set(key, { name: b.hotelNameSnapshot || b.hotelId || "Unknown", total: 0, cancelled: 0, spent: 0 });
+      const st = map.get(key)!;
+      st.total += 1;
+      st.spent += Number(b.cost || 0);
+      if (b.status === "Cancelled") st.cancelled += 1;
+    }
+    return Array.from(map.values())
+      .map((h) => ({ ...h, cancelRate: h.total ? Math.round((h.cancelled / h.total) * 100) : 0 }))
+      .filter((h) => h.total >= 2)
+      .sort((a, b) => a.cancelRate - b.cancelRate || b.spent - a.spent)
+      .slice(0, 8);
+  }, [state.bookings]);
+
+  const riskyAccounts = useMemo(() => {
+    return model.derivedAccounts
+      .map((a: any) => {
+        const risk =
+          (a.cancelledBookings || 0) * 2 +
+          (a.consecutiveCancelled || 0) * 3 +
+          (!String(a.password || "").trim() ? 3 : 0) +
+          (!a.cooldownOk ? 2 : 0);
+        return { ...a, risk };
+      })
+      .sort((a: any, b: any) => b.risk - a.risk)
+      .slice(0, 8);
+  }, [model.derivedAccounts]);
+
+  const recommendedPairs = useMemo(() => {
+    const accounts = model.accountsReady.slice(0, 6);
+    const hotels = model.hotelsEligible.slice(0, 6);
+    const pairs: Array<{ email: string; hotel: string }> = [];
+    for (let i = 0; i < Math.max(accounts.length, hotels.length); i++) {
+      const acc = accounts[i % accounts.length];
+      const hot = hotels[i % hotels.length];
+      if (acc && hot) pairs.push({ email: acc.email, hotel: hot.name || hot.hotelId });
+    }
+    return pairs.slice(0, 6);
+  }, [model.accountsReady, model.hotelsEligible]);
+
+  const rewardSummary = useMemo(() => {
+    const today = todayISO();
+    const byEmail = new Map<string, any>();
+    for (const acc of state.database) {
+      const key = safeLower(acc.email);
+      byEmail.set(key, {
+        email: acc.email,
+        password: acc.password || "",
+        accumulated: 0,
+        potential: 0,
+        nextRewardAt: "",
+        lastRewardAt: "",
+        earnedCount: 0,
+      });
+    }
+    for (const b of state.bookings) {
+      if (b.status === "Cancelled") continue;
+      if (!Number(b.rewardAmount || 0)) continue;
+      const key = safeLower(b.email);
+      if (!byEmail.has(key)) continue;
+      const eta = computeRewardETA(b, state.settings);
+      if (!eta) continue;
+      if (eta <= today) {
+        const row = byEmail.get(key);
+        row.accumulated += Number(b.rewardAmount || 0);
+        row.earnedCount += 1;
+        if (!row.lastRewardAt || eta > row.lastRewardAt) row.lastRewardAt = eta;
+      } else {
+        const row = byEmail.get(key);
+        row.potential += Number(b.rewardAmount || 0);
+        if (!row.nextRewardAt || eta < row.nextRewardAt) row.nextRewardAt = eta;
+      }
+    }
+    const salesByEmail = new Map<string, number>();
+    for (const s of state.sales) {
+      const key = safeLower(s.email);
+      salesByEmail.set(key, (salesByEmail.get(key) || 0) + Number(s.amount || 0));
+    }
+    return Array.from(byEmail.values()).map((row) => {
+      const spent = salesByEmail.get(safeLower(row.email)) || 0;
+      const daysSinceLast = row.lastRewardAt ? daysDiff(row.lastRewardAt) : null;
+      const daysUntilNext = row.nextRewardAt ? daysDiff(today, row.nextRewardAt) : null;
+      let medal = "—";
+      const totalEarned = row.accumulated;
+      if (totalEarned > 300 && row.potential === 0 && daysSinceLast !== null) {
+        if (daysSinceLast >= 40) medal = "Platinum";
+        else if (daysSinceLast >= 20) medal = "Gold";
+      } else if (totalEarned >= 200 && totalEarned <= 300 && daysSinceLast !== null) {
+        medal = daysSinceLast <= 20 ? "Bronze/Silver" : "Silver";
+      } else if (totalEarned >= 50 && totalEarned < 200) {
+        medal = "Bronze";
+      }
+      return {
+        ...row,
+        spent,
+        restAmount: totalEarned - spent,
+        daysSinceLast,
+        daysUntilNext,
+        medal,
+      };
+    });
+  }, [state.database, state.bookings, state.sales, state.settings]);
 
   const accountsByDay = useMemo(() => {
     const map = new Map<string, number>();
@@ -1419,6 +1681,7 @@ export default function App() {
           checkOut: row.checkOut,
           promoCode: row.promoCode || "",
           rewardAmount: row.rewardAmount || 0,
+          rewardCurrency: row.rewardCurrency || "USD",
           rewardType: row.rewardType || "Booking",
           airline: row.airline || "",
           rewardPaidOn: row.rewardPaidOn || "",
@@ -1540,7 +1803,22 @@ export default function App() {
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
           <div className={`xl:col-span-2 ${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Net Trend (30d)</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className={`font-bold text-lg ${themeMode === "dark" ? "text-white" : "text-slate-900"}`}>Net Trend</h3>
+              <div className="flex items-center gap-2 text-xs">
+                {[30, 50, 365].map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => setTrendDays(d)}
+                    className={`px-2.5 py-1 rounded-full border ${
+                      trendDays === d ? "border-blue-500 text-blue-500" : "border-slate-200 text-slate-500"
+                    }`}
+                  >
+                    {d}d
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={netTrend}>
@@ -1555,7 +1833,7 @@ export default function App() {
           </div>
 
           <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Booking Status Mix</h3>
+            <h3 className={`font-bold text-lg mb-4 ${themeMode === "dark" ? "text-white" : "text-slate-900"}`}>Booking Status Mix</h3>
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -1627,13 +1905,37 @@ export default function App() {
           </div>
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chainStats} layout="vertical" barSize={14}>
+              <BarChart
+                data={chainStats}
+                layout="vertical"
+                barSize={14}
+              >
                 <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} horizontal={false} />
                 <XAxis type="number" stroke={theme.axis} axisLine={false} tickLine={false} />
                 <YAxis type="category" dataKey="chain" stroke={theme.axis} axisLine={false} tickLine={false} width={120} />
                 <RechartsTooltip contentStyle={theme.tooltip} />
-                <Bar dataKey="other" stackId="a" fill="#3B82F6" radius={[0, 6, 6, 0]} />
-                <Bar dataKey="cancelled" stackId="a" fill="#EF4444" radius={[0, 6, 6, 0]} />
+                <Bar
+                  dataKey="other"
+                  stackId="a"
+                  fill="#3B82F6"
+                  radius={[0, 6, 6, 0]}
+                  onClick={(data: any) => {
+                    if (!data?.payload?.chain) return;
+                    setChainModalName(data.payload.chain);
+                    setChainModalOpen(true);
+                  }}
+                />
+                <Bar
+                  dataKey="cancelled"
+                  stackId="a"
+                  fill="#EF4444"
+                  radius={[0, 6, 6, 0]}
+                  onClick={(data: any) => {
+                    if (!data?.payload?.chain) return;
+                    setChainModalName(data.payload.chain);
+                    setChainModalOpen(true);
+                  }}
+                />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -1694,9 +1996,17 @@ export default function App() {
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
           <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Best Hotels (low cancellations)</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold text-lg text-slate-900">Best Hotels</h3>
+              <button
+                onClick={() => setBestHotelMode(bestHotelMode === "cancellations" ? "spend" : "cancellations")}
+                className="px-3 py-1 rounded-full border border-slate-200 text-xs text-slate-600"
+              >
+                {bestHotelMode === "cancellations" ? "By spend + low cancels" : "By low cancels"}
+              </button>
+            </div>
             <div className="space-y-2 text-xs text-slate-600">
-              {bestHotels.map((h) => (
+              {(bestHotelMode === "cancellations" ? bestHotels : bestHotelsBySpend).map((h: any) => (
                 <div key={`${h.hotelId}-${h.name}`} className="flex items-center justify-between gap-3">
                   <span className="truncate">{h.name}</span>
                   <span className={`font-mono ${h.cancelRate >= 25 ? "text-rose-300" : "text-emerald-300"}`}>
@@ -1704,7 +2014,9 @@ export default function App() {
                   </span>
                 </div>
               ))}
-              {bestHotels.length === 0 && <div className="text-slate-500">Not enough data yet.</div>}
+              {(bestHotelMode === "cancellations" ? bestHotels : bestHotelsBySpend).length === 0 && (
+                <div className="text-slate-500">Not enough data yet.</div>
+              )}
             </div>
           </div>
 
@@ -1738,45 +2050,6 @@ export default function App() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Top Hotels (by bookings)</h3>
-            <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={model.topHotels.map((h: any) => ({ name: (h.name || h.hotelId).slice(0, 18), value: h.totalBookings }))}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
-                  <XAxis dataKey="name" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
-                  <RechartsTooltip contentStyle={theme.tooltip} />
-                  <Bar dataKey="value" radius={[6, 6, 0, 0]} fill="#3B82F6" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-bold text-lg text-slate-900">Top Accounts (by bookings)</h3>
-              <button
-                onClick={() => setAuditOpen(true)}
-                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-sm font-bold inline-flex items-center gap-2"
-              >
-                <History size={16} /> Audit
-              </button>
-            </div>
-            <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={model.topAccounts.map((a: any) => ({ name: a.email.slice(0, 18), value: a.totalBookings }))}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
-                  <XAxis dataKey="name" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
-                  <RechartsTooltip contentStyle={theme.tooltip} />
-                  <Bar dataKey="value" radius={[6, 6, 0, 0]} fill="#6366F1" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
       </div>
     );
   };
@@ -1913,6 +2186,15 @@ export default function App() {
       .filter((a: any) => (rawOnlyMissing ? !String(a.password || "").trim() : true));
     const cancelled = model.statusCounts.Cancelled || 0;
     const other = (model.statusCounts.Pending || 0) + (model.statusCounts.Confirmed || 0) + (model.statusCounts.Completed || 0);
+    const duplicateMap = useMemo(() => {
+      const map = new Map<string, any[]>();
+      for (const a of state.database) {
+        const key = safeLower(a.email);
+        if (!map.has(key)) map.set(key, []);
+        map.get(key)!.push(a);
+      }
+      return map;
+    }, [state.database]);
 
     const copyMissingEmails = async () => {
       const payload = missing.map((a: any) => a.email).join("\n");
@@ -1953,7 +2235,7 @@ export default function App() {
               </div>
               <div>
                 <h3 className="font-bold text-slate-900 text-lg">
-                  Dashboard — {isSheet ? "Sheet" : "RawData"} (accounts: email + password)
+                  Dashboard — RawData (accounts: email + password)
                 </h3>
                 <p className="text-xs text-slate-500">
                   Вставляй сюда все аккаунты: <span className="font-mono">email&lt;TAB&gt;password</span>. Пароли автоматически обновятся во всех бордах.
@@ -1966,6 +2248,25 @@ export default function App() {
                 <input type="checkbox" checked={rawOnlyMissing} onChange={(e) => setRawOnlyMissing((e.target as HTMLInputElement).checked)} />
                 show emails without passwords
               </label>
+              <button
+                onClick={() => {
+                  setState((prev: any) => {
+                    const seen = new Set<string>();
+                    const nextDb = [];
+                    for (const row of prev.database) {
+                      const key = safeLower(row.email);
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      nextDb.push(row);
+                    }
+                    return { ...prev, database: nextDb };
+                  });
+                  pushToast("ok", "Duplicates removed", "Kept the first entry per email.");
+                }}
+                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-xs font-bold"
+              >
+                Delete duplicates
+              </button>
               <button
                 onClick={copyMissingEmails}
                 className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-xs font-bold"
@@ -2014,7 +2315,7 @@ export default function App() {
 
         <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
           <div className="p-4 border-b border-slate-200 font-bold text-slate-900 flex justify-between items-center">
-            <span>{isSheet ? "Sheet" : "RawData"} — Accounts</span>
+            <span>RawData — Accounts</span>
             <span className="text-slate-500 text-sm font-normal">{rows.length} rows</span>
           </div>
 
@@ -2024,28 +2325,89 @@ export default function App() {
                 <tr>
                   <th className="px-6 py-4">Email</th>
                   <th className="px-6 py-4">Password</th>
+                  <th className="px-6 py-4">Duplicate</th>
                   <th className="px-6 py-4">Status</th>
+                  <th className="px-6 py-4">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
                 {rows.map((a: any) => {
                   const missingPass = !String(a.password || "").trim();
+                  const duplicates = duplicateMap.get(a.emailKey) || [];
+                  const isDup = duplicates.length > 1;
+                  const hasDifferentPass = isDup && new Set(duplicates.map((d) => String(d.password || ""))).size > 1;
                   return (
                     <tr key={a.emailKey} className={`hover:bg-slate-50 ${missingPass ? "bg-rose-500/5" : ""}`}>
                       <td className="px-6 py-4">
                         <div className="text-slate-900 font-semibold">{a.email}</div>
                       </td>
                       <td className="px-6 py-4 font-mono text-xs text-slate-700">
-                        {missingPass ? <span className="text-rose-300">—</span> : a.password}
+                        <input
+                          value={a.password || ""}
+                          onChange={(e) => upsertDatabaseRow(a.email, { password: e.target.value })}
+                          className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-48"
+                          placeholder="password"
+                        />
+                      </td>
+                      <td className="px-6 py-4 text-xs">
+                        {isDup ? (
+                          <span className={`px-2 py-1 rounded-full border ${hasDifferentPass ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
+                            {hasDifferentPass ? "DUPLICATE (diff pass)" : "DUPLICATE"}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
                       </td>
                       <td className="px-6 py-4">
                         {missingPass ? <Badge themeMode={themeMode} kind="block">NO PASS</Badge> : <Badge themeMode={themeMode} kind="active">OK</Badge>}
+                      </td>
+                      <td className="px-6 py-4 text-xs">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => pushToast("ok", "Saved", "Password updated.")}
+                            className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+                          >
+                            Save
+                          </button>
+                          {isDup && (
+                            <>
+                              <button
+                                onClick={() => {
+                                  setState((prev: any) => ({
+                                    ...prev,
+                                    database: prev.database.filter((d: any, idx: number) => {
+                                      if (safeLower(d.email) !== a.emailKey) return true;
+                                      return idx === prev.database.findIndex((x: any) => safeLower(x.email) === a.emailKey);
+                                    }),
+                                  }));
+                                }}
+                                className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+                              >
+                                Keep First
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setState((prev: any) => ({
+                                    ...prev,
+                                    database: prev.database.filter((d: any) => {
+                                      if (safeLower(d.email) !== a.emailKey) return true;
+                                      return String(d.password || "").trim() === String(a.password || "").trim();
+                                    }),
+                                  }));
+                                }}
+                                className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+                              >
+                                Keep This
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
                 })}
                 {rows.length === 0 && (
-                  <tr><td colSpan={3} className="px-6 py-10 text-center text-slate-500">No rows.</td></tr>
+                  <tr><td colSpan={6} className="px-6 py-10 text-center text-slate-500">No rows.</td></tr>
                 )}
               </tbody>
             </table>
@@ -2062,15 +2424,52 @@ export default function App() {
           <h2 className="text-2xl font-bold text-slate-900">Hotels</h2>
           <p className="text-xs text-slate-500">Отели создаются автоматически из Smart Import. TECH block: cancelled ≥ {state.settings.hotelTechBlockTotal}.</p>
         </div>
-        <button
-          onClick={() => downloadCSV("hotels.csv", state.hotels)}
-          className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-sm font-bold inline-flex items-center gap-2"
-        >
-          <Download size={16} /> Export
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              setHotelTopRatedOnly(true);
+              setHotelCancelledMax("0");
+            }}
+            className="px-3 py-2 rounded-xl border border-emerald-200 text-emerald-600 text-xs font-bold hover:bg-emerald-50"
+          >
+            Top Rated
+          </button>
+          <button
+            onClick={() => downloadCSV("hotels.csv", state.hotels)}
+            className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-sm font-bold inline-flex items-center gap-2"
+          >
+            <Download size={16} /> Export
+          </button>
+        </div>
       </div>
 
       <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
+        <div className="p-4 border-b border-slate-200 flex flex-wrap gap-3 items-center justify-between text-xs text-slate-500">
+          <div className="flex items-center gap-2">
+            <span>Min Confirmed</span>
+            <input
+              value={hotelConfirmedMin}
+              onChange={(e) => setHotelConfirmedMin((e.target as HTMLInputElement).value)}
+              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span>Max Cancelled</span>
+            <input
+              value={hotelCancelledMax}
+              onChange={(e) => setHotelCancelledMax((e.target as HTMLInputElement).value)}
+              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
+            />
+          </div>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={hotelTopRatedOnly}
+              onChange={(e) => setHotelTopRatedOnly((e.target as HTMLInputElement).checked)}
+            />
+            only 0 cancellations
+          </label>
+        </div>
         <div className="overflow-x-auto max-h-[75vh]">
           <table className="w-full text-left text-sm text-slate-500">
             <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
@@ -2078,6 +2477,7 @@ export default function App() {
                 <th className="px-6 py-4">Hotel</th>
                 <th className="px-6 py-4">Status</th>
                 <th className="px-6 py-4">Stats</th>
+                <th className="px-6 py-4">Spent</th>
                 <th className="px-6 py-4">Notes</th>
               </tr>
             </thead>
@@ -2088,6 +2488,14 @@ export default function App() {
                     ? safeLower(h.name).includes(safeLower(searchTerm)) || String(h.hotelId).includes(searchTerm)
                     : true
                 )
+                .filter((h: any) => {
+                  const minConfirmed = hotelConfirmedMin ? Number(hotelConfirmedMin) : null;
+                  const maxCancelled = hotelCancelledMax ? Number(hotelCancelledMax) : null;
+                  if (minConfirmed !== null && !Number.isNaN(minConfirmed) && (h.confirmed || 0) < minConfirmed) return false;
+                  if (maxCancelled !== null && !Number.isNaN(maxCancelled) && (h.cancelled || 0) > maxCancelled) return false;
+                  if (hotelTopRatedOnly && (h.cancelled || 0) > 0) return false;
+                  return true;
+                })
                 .sort((a: any, b: any) => b.totalBookings - a.totalBookings)
                 .map((h: any) => (
                   <tr key={h.hotelId} className="hover:bg-slate-50">
@@ -2108,6 +2516,7 @@ export default function App() {
                       <div className="flex justify-between"><span className="text-slate-500">Confirmed</span><span>{h.confirmed}</span></div>
                       <div className="flex justify-between"><span className="text-slate-500">Cancelled</span><span>{h.cancelled}</span></div>
                     </td>
+                    <td className="px-6 py-4 text-xs font-mono text-slate-700">{money(h.spent || 0)}</td>
                     <td className="px-6 py-4">
                       <input
                         className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-full text-xs"
@@ -2138,6 +2547,8 @@ export default function App() {
 
   const SpentView = () => {
     const [form, setForm] = useState({ date: todayISO(), email: "", amount: "", note: "" });
+    const [amountFilter, setAmountFilter] = useState("");
+    const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
     const addSpent = () => {
       if (!isISODateLike(form.date) || !form.email || !form.email.includes("@") || !isNumericLike(form.amount)) {
@@ -2185,7 +2596,13 @@ export default function App() {
       }
     };
 
-    const rows = [...state.sales].sort((a: any, b: any) => (a.date || "").localeCompare(b.date || "")).reverse();
+    const minAmount = amountFilter ? Number(amountFilter) : null;
+    const rows = [...state.sales]
+      .filter((s: any) => (minAmount === null || Number.isNaN(minAmount) ? true : Number(s.amount || 0) >= minAmount))
+      .sort((a: any, b: any) => {
+        const diff = Number(a.amount || 0) - Number(b.amount || 0);
+        return sortDir === "asc" ? diff : -diff;
+      });
 
     return (
       <div className="space-y-6">
@@ -2229,6 +2646,21 @@ export default function App() {
             >
               Add Spent
             </button>
+            <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
+              <span>Min amount</span>
+              <input
+                value={amountFilter}
+                onChange={(e) => setAmountFilter((e.target as HTMLInputElement).value)}
+                placeholder="0"
+                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-24"
+              />
+              <button
+                onClick={() => setSortDir(sortDir === "asc" ? "desc" : "asc")}
+                className="px-3 py-1 rounded-lg border border-slate-200 text-slate-600"
+              >
+                Sort {sortDir === "asc" ? "▲" : "▼"}
+              </button>
+            </div>
           </div>
 
           <div>
@@ -2269,10 +2701,67 @@ export default function App() {
               <tbody className="divide-y divide-slate-200">
                 {rows.map((s: any) => (
                   <tr key={s.id} className="hover:bg-slate-50">
-                    <td className="px-6 py-4">{s.date}</td>
-                    <td className="px-6 py-4 text-slate-900">{s.email}</td>
-                    <td className="px-6 py-4 font-mono">{money(s.amount)}</td>
-                    <td className="px-6 py-4 text-xs text-slate-600">{s.note || "—"}</td>
+                    <td className="px-6 py-4">
+                      <input
+                        type="date"
+                        value={s.date || ""}
+                        onChange={(e) => {
+                          const date = (e.target as HTMLInputElement).value;
+                          setState((prev: any) => {
+                            const next = { ...prev, sales: [...prev.sales] };
+                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
+                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], date };
+                            return next;
+                          });
+                        }}
+                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs"
+                      />
+                    </td>
+                    <td className="px-6 py-4">
+                      <input
+                        value={s.email || ""}
+                        onChange={(e) => {
+                          const email = safeLower((e.target as HTMLInputElement).value);
+                          setState((prev: any) => {
+                            const next = { ...prev, sales: [...prev.sales] };
+                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
+                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], email };
+                            return next;
+                          });
+                        }}
+                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-52"
+                      />
+                    </td>
+                    <td className="px-6 py-4">
+                      <input
+                        value={s.amount ?? ""}
+                        onChange={(e) => {
+                          const amount = parseMoney((e.target as HTMLInputElement).value);
+                          setState((prev: any) => {
+                            const next = { ...prev, sales: [...prev.sales] };
+                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
+                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], amount };
+                            return next;
+                          });
+                        }}
+                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-24"
+                      />
+                    </td>
+                    <td className="px-6 py-4">
+                      <input
+                        value={s.note || ""}
+                        onChange={(e) => {
+                          const note = (e.target as HTMLInputElement).value;
+                          setState((prev: any) => {
+                            const next = { ...prev, sales: [...prev.sales] };
+                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
+                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], note };
+                            return next;
+                          });
+                        }}
+                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-full"
+                      />
+                    </td>
                   </tr>
                 ))}
                 {rows.length === 0 && (
@@ -2434,6 +2923,28 @@ export default function App() {
                 />
                 missing password
               </label>
+              <button
+                onClick={() => setBookingEditMode((s) => !s)}
+                className="px-3 py-2 rounded-xl border border-slate-900 bg-slate-900 hover:bg-slate-800 text-slate-100 text-xs font-bold"
+              >
+                Action: {bookingEditMode ? "ON" : "OFF"}
+              </button>
+              <button
+                onClick={() => {
+                  const map = new Map<string, any[]>();
+                  for (const b of state.bookings) {
+                    const key = `${String(b.bookingNo)}::${String(b.pin || "").padStart(4, "0")}`;
+                    if (!map.has(key)) map.set(key, []);
+                    map.get(key)!.push(b);
+                  }
+                  const dup = Array.from(map.values()).filter((list) => list.length > 1);
+                  setBookingDupRows(dup.flat());
+                  setBookingDupOpen(true);
+                }}
+                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold"
+              >
+                Check duplicates
+              </button>
             </div>
           </div>
 
@@ -2481,7 +2992,7 @@ export default function App() {
                         {missingPassword && <div className="text-xs text-rose-400 mt-1">no password</div>}
                       </td>
                       <td className="px-6 py-4 font-mono text-slate-700">{b.bookingNo}</td>
-                      <td className="px-6 py-4 font-mono">{b.pin}</td>
+                      <td className="px-6 py-4 font-mono">{String(b.pin || "").padStart(4, "0")}</td>
                       <td className="px-6 py-4">
                         <div className="text-slate-900 font-medium">{b.hotelNameSnapshot}</div>
                         <div className="text-xs text-slate-500 font-mono">{b.hotelId}</div>
@@ -2492,72 +3003,125 @@ export default function App() {
                       <td className="px-6 py-4 font-mono">{money(b.cost)}</td>
                       <td className="px-6 py-4">{b.checkIn}</td>
                       <td className="px-6 py-4">{b.checkOut}</td>
-                      <td className="px-6 py-4 font-mono text-emerald-300">
-                        {b.rewardAmount ? money(b.rewardAmount) : <span className="text-slate-600">—</span>}
+                      <td className="px-6 py-4 font-mono text-slate-700">
+                        {bookingEditMode ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              defaultValue={b.rewardAmount}
+                              onBlur={(e) => {
+                                const rewardAmount = parseMoney((e.target as HTMLInputElement).value);
+                                setState((prev: any) => {
+                                  const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                  const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                  if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardAmount };
+                                  next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward amount updated: ${b.email} / ${b.bookingNo} → ${rewardAmount}` });
+                                  next.audit = next.audit.slice(-400);
+                                  return next;
+                                });
+                              }}
+                              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-24"
+                            />
+                            <select
+                              defaultValue={b.rewardCurrency || "USD"}
+                              onBlur={(e) => {
+                                const rewardCurrency = (e.target as HTMLSelectElement).value;
+                                setState((prev: any) => {
+                                  const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                  const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                  if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardCurrency };
+                                  next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward currency updated: ${b.email} / ${b.bookingNo} → ${rewardCurrency}` });
+                                  next.audit = next.audit.slice(-400);
+                                  return next;
+                                });
+                              }}
+                              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs"
+                            >
+                              <option value="USD">USD</option>
+                              <option value="EUR">EUR</option>
+                              <option value="GBP">GBP</option>
+                            </select>
+                          </div>
+                        ) : b.rewardAmount ? (
+                          `${b.rewardCurrency || "USD"} ${Number(b.rewardAmount || 0).toFixed(2)}`
+                        ) : (
+                          <span className="text-slate-600">—</span>
+                        )}
                       </td>
 
                       <td className="px-6 py-4">
-                        <select
-                          value={normalizeRewardType(b.rewardType || "Booking", getRewardTypes(state.settings))}
-                          onChange={(e) => {
-                            const rewardType = (e.target as HTMLSelectElement).value;
-                            setState((prev: any) => {
-                              const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                              const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                              if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardType };
-                              next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward type updated: ${b.email} / ${b.bookingNo} → ${rewardType}` });
-                              next.audit = next.audit.slice(-400);
-                              return next;
-                            });
-                          }}
-                          className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none"
-                        >
-                          {getRewardTypes(state.settings).map((t: any) => (
-                            <option key={t.name} value={t.name}>{t.name}</option>
-                          ))}
-                        </select>
+                        {bookingEditMode ? (
+                          <select
+                            defaultValue={normalizeRewardType(b.rewardType || "Booking", getRewardTypes(state.settings))}
+                            onBlur={(e) => {
+                              const rewardType = (e.target as HTMLSelectElement).value;
+                              setState((prev: any) => {
+                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardType };
+                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward type updated: ${b.email} / ${b.bookingNo} → ${rewardType}` });
+                                next.audit = next.audit.slice(-400);
+                                return next;
+                              });
+                            }}
+                            className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none"
+                          >
+                            {getRewardTypes(state.settings).map((t: any) => (
+                              <option key={t.name} value={t.name}>{t.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-slate-600">{normalizeRewardType(b.rewardType || "Booking", getRewardTypes(state.settings))}</span>
+                        )}
                       </td>
 
                       <td className="px-6 py-4">
-                        <input
-                          value={b.airline || ""}
-                          onChange={(e) => {
-                            const airline = (e.target as HTMLInputElement).value;
-                            setState((prev: any) => {
-                              const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                              const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                              if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], airline };
-                              next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Airline updated: ${b.email} / ${b.bookingNo} → ${airline || "CLEAR"}` });
-                              next.audit = next.audit.slice(-400);
-                              return next;
-                            });
-                          }}
-                          placeholder="AA / Delta / Lufthansa"
-                          className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none w-40"
-                        />
+                        {bookingEditMode ? (
+                          <input
+                            defaultValue={b.airline || ""}
+                            onBlur={(e) => {
+                              const airline = (e.target as HTMLInputElement).value;
+                              setState((prev: any) => {
+                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], airline };
+                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Airline updated: ${b.email} / ${b.bookingNo} → ${airline || "CLEAR"}` });
+                                next.audit = next.audit.slice(-400);
+                                return next;
+                              });
+                            }}
+                            placeholder="AA / Delta / Lufthansa"
+                            className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none w-40"
+                          />
+                        ) : (
+                          <span className="text-slate-600">{b.airline || "—"}</span>
+                        )}
                       </td>
 
                       <td className="px-6 py-4">
-                        <select
-                          value={b.status}
-                          onChange={(e) => {
-                            const status = (e.target as HTMLSelectElement).value;
-                            setState((prev: any) => {
-                              const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                              const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                              if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], status };
-                              next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Booking status updated: ${b.email} / ${b.bookingNo} → ${status}` });
-                              next.audit = next.audit.slice(-400);
-                              return next;
-                            });
-                          }}
-                          className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none"
-                        >
-                          <option>Pending</option>
-                          <option>Confirmed</option>
-                          <option>Completed</option>
-                          <option>Cancelled</option>
-                        </select>
+                        {bookingEditMode ? (
+                          <select
+                            defaultValue={b.status}
+                            onBlur={(e) => {
+                              const status = (e.target as HTMLSelectElement).value;
+                              setState((prev: any) => {
+                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], status };
+                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Booking status updated: ${b.email} / ${b.bookingNo} → ${status}` });
+                                next.audit = next.audit.slice(-400);
+                                return next;
+                              });
+                            }}
+                            className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none"
+                          >
+                            <option>Pending</option>
+                            <option>Confirmed</option>
+                            <option>Completed</option>
+                            <option>Cancelled</option>
+                          </select>
+                        ) : (
+                          <div className="text-xs text-slate-600">{b.status}</div>
+                        )}
                         <div className="mt-2">
                           {b.status === "Confirmed" ? (
                             <Badge themeMode={themeMode} kind="active">CONFIRMED</Badge>
@@ -2582,24 +3146,28 @@ export default function App() {
                       <td className="px-6 py-4">{b.level || <span className="text-slate-600">—</span>}</td>
 
                       <td className="px-6 py-4">
-                        <input
-                          type="date"
-                          value={b.rewardPaidOn || ""}
-                          onChange={(e) => {
-                            const rewardPaidOn = (e.target as HTMLInputElement).value;
-                            setState((prev: any) => {
-                              const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                              const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                              if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardPaidOn };
-                              next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward paid date updated: ${b.email} / ${b.bookingNo} → ${rewardPaidOn || "CLEAR"}` });
-                              next.audit = next.audit.slice(-400);
-                              return next;
-                            });
-                          }}
-                          className={`bg-white border rounded text-xs px-2 py-1 text-slate-600 outline-none ${
-                            paidMissing ? "border-amber-500/40" : "border-slate-200"
-                          }`}
-                        />
+                        {bookingEditMode ? (
+                          <input
+                            type="date"
+                            defaultValue={b.rewardPaidOn || ""}
+                            onBlur={(e) => {
+                              const rewardPaidOn = (e.target as HTMLInputElement).value;
+                              setState((prev: any) => {
+                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardPaidOn };
+                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward paid date updated: ${b.email} / ${b.bookingNo} → ${rewardPaidOn || "CLEAR"}` });
+                                next.audit = next.audit.slice(-400);
+                                return next;
+                              });
+                            }}
+                            className={`bg-white border rounded text-xs px-2 py-1 text-slate-600 outline-none ${
+                              paidMissing ? "border-amber-500/40" : "border-slate-200"
+                            }`}
+                          />
+                        ) : (
+                          <span className="text-slate-600">{b.rewardPaidOn || "—"}</span>
+                        )}
                       </td>
 
                       <td className="px-6 py-4 font-mono text-xs text-slate-700">{eta || <span className="text-slate-600">—</span>}</td>
@@ -2620,8 +3188,67 @@ export default function App() {
     );
   };
 
+  const RewardView = () => {
+    const rows = rewardSummary.filter((r: any) =>
+      searchTerm ? safeLower(r.email).includes(safeLower(searchTerm)) : true
+    );
+
+    return (
+      <div className="space-y-6">
+        <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
+          <div className="p-4 border-b border-slate-200 font-bold text-slate-900 flex justify-between items-center">
+            <span>Reward — Accounts</span>
+            <span className="text-slate-500 text-sm font-normal">{rows.length} rows</span>
+          </div>
+          <div className="overflow-x-auto max-h-[75vh]">
+            <table className="w-full text-left text-sm text-slate-500">
+              <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
+                <tr>
+                  <th className="px-6 py-4">Account</th>
+                  <th className="px-6 py-4">Password</th>
+                  <th className="px-6 py-4">Accumulated</th>
+                  <th className="px-6 py-4">Last Reward</th>
+                  <th className="px-6 py-4">Next Reward</th>
+                  <th className="px-6 py-4">Days Left</th>
+                  <th className="px-6 py-4">Potential</th>
+                  <th className="px-6 py-4">Spent</th>
+                  <th className="px-6 py-4">Rest</th>
+                  <th className="px-6 py-4">Medal</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {rows.map((r: any) => (
+                  <tr key={r.email} className="hover:bg-slate-50 cursor-pointer" onClick={() => setRewardModalEmail(r.email)}>
+                    <td className="px-6 py-4 text-slate-900 font-semibold">{r.email}</td>
+                    <td className="px-6 py-4 font-mono text-xs text-slate-700">{r.password || "—"}</td>
+                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.accumulated)}</td>
+                    <td className="px-6 py-4 text-slate-700">{r.lastRewardAt || "—"}</td>
+                    <td className="px-6 py-4 text-slate-700">{r.nextRewardAt || "—"}</td>
+                    <td className="px-6 py-4 text-slate-700">{r.daysUntilNext ?? "—"}</td>
+                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.potential)}</td>
+                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.spent)}</td>
+                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.restAmount)}</td>
+                    <td className="px-6 py-4 text-slate-700">{r.medal}</td>
+                  </tr>
+                ))}
+                {rows.length === 0 && (
+                  <tr>
+                    <td colSpan={10} className="px-6 py-10 text-center text-slate-500">No reward data.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const NextActionView = () => {
-    const readyList = model.accountsReady.filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true));
+    const minBalance = readyBalanceMin ? Number(readyBalanceMin) : null;
+    const readyList = model.accountsReady
+      .filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true))
+      .filter((a: any) => (minBalance === null || Number.isNaN(minBalance) ? true : Number(a.netBalance || 0) >= minBalance));
 
     const toggleOne = (emailKey: string) => {
       setReadySelected((prev) => {
@@ -2702,10 +3329,19 @@ export default function App() {
                 </div>
                 <button
                   onClick={copySelected}
-                  className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-xs font-bold"
+                  className="px-3 py-2 rounded-xl border border-slate-900 bg-slate-900 hover:bg-slate-800 text-slate-100 text-xs font-bold"
                 >
                   Copy Selected ({selectedCount})
                 </button>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                <span>Min balance</span>
+                <input
+                  value={readyBalanceMin}
+                  onChange={(e) => setReadyBalanceMin((e.target as HTMLInputElement).value)}
+                  placeholder="0"
+                  className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-24"
+                />
               </div>
             </div>
           </div>
@@ -2866,6 +3502,7 @@ export default function App() {
     { id: "sheet", icon: Sheet, label: "Sheet" },
     { id: "hotels", icon: Building2, label: "Hotels" },
     { id: "spent", icon: Wallet, label: "Spent" },
+    { id: "reward", icon: Wallet, label: "Reward" },
     { id: "next_action", icon: Activity, label: "Next Action" },
   ];
 
@@ -3005,6 +3642,7 @@ export default function App() {
           {activeTab === "sheet" && <RawDataView />}
           {activeTab === "hotels" && <HotelsView />}
           {activeTab === "spent" && <SpentView />}
+          {activeTab === "reward" && <RewardView />}
           {activeTab === "next_action" && <NextActionView />}
         </div>
       </main>
@@ -3196,6 +3834,147 @@ export default function App() {
             </table>
           </div>
         </div>
+      </Modal>
+
+      <Modal open={bookingDupOpen} title="Booking Duplicates (BookingNo + PIN)" onClose={() => setBookingDupOpen(false)} themeMode={themeMode}>
+        <div className="text-xs text-slate-500 mb-3">Дубликаты по BookingNo и PIN (PIN приводится к 4 цифрам).</div>
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <div className="max-h-[60vh] overflow-auto">
+            <table className="w-full text-left text-xs text-slate-500">
+              <thead className="sticky top-0 bg-white text-slate-500 uppercase">
+                <tr>
+                  <th className="px-4 py-3">Email</th>
+                  <th className="px-4 py-3">BookingNo</th>
+                  <th className="px-4 py-3">PIN</th>
+                  <th className="px-4 py-3">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {bookingDupRows.map((b: any) => (
+                  <tr key={b.bookingId} className="hover:bg-slate-50">
+                    <td className="px-4 py-3 text-slate-700">{b.email}</td>
+                    <td className="px-4 py-3 font-mono text-slate-700">{b.bookingNo}</td>
+                    <td className="px-4 py-3 font-mono text-slate-700">{String(b.pin || "").padStart(4, "0")}</td>
+                    <td className="px-4 py-3 text-slate-600">{b.status}</td>
+                  </tr>
+                ))}
+                {bookingDupRows.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-8 text-center text-slate-500">No duplicates found.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={chainModalOpen} title={`Chain: ${chainModalName || ""}`} onClose={() => setChainModalOpen(false)} themeMode={themeMode}>
+        <div className="text-xs text-slate-500 mb-3">Hotels ranked by lowest cancellation rate.</div>
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <div className="max-h-[60vh] overflow-auto">
+            <table className="w-full text-left text-xs text-slate-500">
+              <thead className="sticky top-0 bg-white text-slate-500 uppercase">
+                <tr>
+                  <th className="px-4 py-3">Hotel</th>
+                  <th className="px-4 py-3">Cancel rate</th>
+                  <th className="px-4 py-3">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {(chainHotels[chainModalName] || []).map((h: any, idx: number) => (
+                  <tr key={`${h.name}-${idx}`} className="hover:bg-slate-50">
+                    <td className="px-4 py-3 text-slate-700">{h.name}</td>
+                    <td className="px-4 py-3 text-slate-700">{h.cancelRate}%</td>
+                    <td className="px-4 py-3 text-slate-700">{h.total}</td>
+                  </tr>
+                ))}
+                {(!chainModalName || (chainHotels[chainModalName] || []).length === 0) && (
+                  <tr>
+                    <td colSpan={3} className="px-4 py-8 text-center text-slate-500">No hotels found.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!rewardModalEmail}
+        title={`Account: ${rewardModalEmail || ""}`}
+        onClose={() => setRewardModalEmail(null)}
+        themeMode={themeMode}
+      >
+        {rewardModalEmail ? (
+          <div className="space-y-6">
+            <div className="text-xs text-slate-500">
+              {(() => {
+                const list = state.bookings.filter((b: any) => safeLower(b.email) === safeLower(rewardModalEmail));
+                const total = list.length;
+                const cancelled = list.filter((b: any) => b.status === "Cancelled").length;
+                const confirmed = list.filter((b: any) => b.status === "Confirmed").length;
+                const completed = list.filter((b: any) => b.status === "Completed").length;
+                return `Bookings: ${total} • Confirmed ${confirmed} • Completed ${completed} • Cancelled ${cancelled}`;
+              })()}
+            </div>
+            <div className="text-xs text-slate-500">Bookings</div>
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="max-h-[40vh] overflow-auto">
+                <table className="w-full text-left text-xs text-slate-500">
+                  <thead className="sticky top-0 bg-white text-slate-500 uppercase">
+                    <tr>
+                      <th className="px-4 py-3">Date</th>
+                      <th className="px-4 py-3">Hotel</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Reward ETA</th>
+                      <th className="px-4 py-3">Reward</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {state.bookings
+                      .filter((b: any) => safeLower(b.email) === safeLower(rewardModalEmail))
+                      .map((b: any) => (
+                        <tr key={b.bookingId} className="hover:bg-slate-50">
+                          <td className="px-4 py-3 text-slate-700">{b.createdAt}</td>
+                          <td className="px-4 py-3 text-slate-700">{b.hotelNameSnapshot}</td>
+                          <td className="px-4 py-3 text-slate-600">{b.status}</td>
+                          <td className="px-4 py-3 text-slate-600">{computeRewardETA(b, state.settings) || "—"}</td>
+                          <td className="px-4 py-3 text-slate-700">{b.rewardAmount ? money(b.rewardAmount) : "—"}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="text-xs text-slate-500">Spent</div>
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="max-h-[30vh] overflow-auto">
+                <table className="w-full text-left text-xs text-slate-500">
+                  <thead className="sticky top-0 bg-white text-slate-500 uppercase">
+                    <tr>
+                      <th className="px-4 py-3">Date</th>
+                      <th className="px-4 py-3">Amount</th>
+                      <th className="px-4 py-3">Note</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {state.sales
+                      .filter((s: any) => safeLower(s.email) === safeLower(rewardModalEmail))
+                      .map((s: any) => (
+                        <tr key={s.id} className="hover:bg-slate-50">
+                          <td className="px-4 py-3 text-slate-700">{s.date}</td>
+                          <td className="px-4 py-3 text-slate-700">{money(s.amount)}</td>
+                          <td className="px-4 py-3 text-slate-600">{s.note || "—"}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </Modal>
 
       <button
