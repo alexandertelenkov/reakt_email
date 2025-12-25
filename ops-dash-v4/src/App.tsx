@@ -44,25 +44,31 @@ import {
  */
 
 const COLORS = {
-  bg: "#0B0E14",
-  card: "#151A23",
+  bg: "#F6F7FB",
+  card: "#FFFFFF",
   primary: "#3B82F6",
   accent: "#6366F1",
   success: "#10B981",
   warning: "#F59E0B",
   danger: "#EF4444",
-  text: "#E2E8F0",
+  text: "#FFFFFF",
   textDim: "#94A3B8",
-  border: "#1E293B",
+  border: "#E2E8F0",
   gold: "#FFD700",
   plat: "#60A5FA",
 };
 
-const REWARD_TYPES = ["Booking", "Copa", "AA", "CC"] as const;
+const DEFAULT_REWARD_TYPES = [
+  { name: "Booking", days: 14 },
+  { name: "Copa", days: 64 },
+  { name: "AA", days: 64 },
+  { name: "CC", days: 64 },
+] as const;
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const uid = () => Math.random().toString(16).slice(2) + Date.now().toString(16);
 const safeLower = (s: any) => (s || "").trim().toLowerCase();
+const nowISO = () => new Date().toISOString();
 
 const parseDate = (iso: string) => {
   const d = new Date(iso);
@@ -124,6 +130,34 @@ function downloadCSV(filename: string, rows: any[]) {
   URL.revokeObjectURL(url);
 }
 
+function downloadJSON(filename: string, payload: any) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportStateByEmail(state: any) {
+  const accounts = state.database.map((acc: any) => {
+    const key = safeLower(acc.email);
+    return {
+      ...acc,
+      bookings: state.bookings.filter((b: any) => safeLower(b.email) === key),
+      sales: state.sales.filter((s: any) => safeLower(s.email) === key),
+    };
+  });
+
+  return {
+    exportedAt: nowISO(),
+    settings: state.settings,
+    hotels: state.hotels,
+    accounts,
+  };
+}
+
 function stableHotelIdFromName(name: string) {
   const base = (name || "HOTEL")
     .toUpperCase()
@@ -135,6 +169,41 @@ function stableHotelIdFromName(name: string) {
   for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
   const tail = (hash.toString(16).toUpperCase() + "0000").slice(0, 4);
   return `H_${base}_${tail}`;
+}
+
+function normalizeChainName(name: string) {
+  const raw = String(name || "").trim();
+  if (!raw) return "Unknown";
+  const lowered = raw.toLowerCase();
+  const known = [
+    "holiday inn",
+    "hampton",
+    "hilton",
+    "marriott",
+    "hyatt",
+    "sheraton",
+    "westin",
+    "crowne plaza",
+    "intercontinental",
+    "holiday express",
+    "radisson",
+    "wyndham",
+    "doubletree",
+    "ramada",
+    "fairfield",
+    "courtyard",
+    "residence inn",
+  ];
+  for (const k of known) {
+    if (lowered.includes(k)) {
+      return k
+        .split(" ")
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+        .join(" ");
+    }
+  }
+  const first = raw.split(/[\s,]/).filter(Boolean)[0] || raw;
+  return first.charAt(0).toUpperCase() + first.slice(1);
 }
 
 const KNOWN_STATUS = new Set(["pending", "confirmed", "completed", "cancelled"]);
@@ -163,19 +232,23 @@ function extractGeniusLevel(tailCells: string[]) {
   const mj = joined.match(re);
   if (mj) return `Genius Level ${mj[1]}`;
 
-  // If it looks like a date, we don't want it pretending to be a level.
-  if (/^\d{4}-\d{2}-\d{2}$/.test(joined)) return "";
-  return joined;
+  // If it looks like a date or anything else, don't let it pretend to be a level.
+  return "";
 }
 
-function normalizeRewardType(raw: any) {
+function getRewardTypes(settings?: any) {
+  const list = settings?.rewardTypes;
+  if (Array.isArray(list) && list.length > 0) return list;
+  return DEFAULT_REWARD_TYPES.map((r) => ({ ...r }));
+}
+
+function normalizeRewardType(raw: any, rewardTypes = DEFAULT_REWARD_TYPES) {
   const s = safeLower(raw);
   if (!s) return "Booking";
+  const hit = rewardTypes.find((t: any) => safeLower(t.name) === s);
+  if (hit) return hit.name;
   if (s === "booking") return "Booking";
-  if (s === "copa") return "Copa";
-  if (s === "aa") return "AA";
-  if (s === "cc") return "CC";
-  return "Booking";
+  return raw ? String(raw).trim() : "Booking";
 }
 
 function parseMoney(raw: any) {
@@ -202,9 +275,24 @@ function isISODateLike(x: any) {
 function computeRewardETA(b: any, settings: any) {
   const checkOut = String(b.checkOut || "").trim();
   if (!checkOut) return "";
-  const type = normalizeRewardType(b.rewardType || "Booking");
-  const days = type === "Booking" ? Number(settings.rewardDaysBooking || 14) : Number(settings.rewardDaysOther || 64);
+  const types = getRewardTypes(settings);
+  const type = normalizeRewardType(b.rewardType || "Booking", types);
+  const match = types.find((t: any) => safeLower(t.name) === safeLower(type));
+  const days = match
+    ? Number(match.days || 0)
+    : type === "Booking"
+    ? Number(settings.rewardDaysBooking || 14)
+    : Number(settings.rewardDaysOther || 64);
   return addDaysISO(checkOut, days);
+}
+
+function leadTimeBucket(days: number | null) {
+  if (days === null || Number.isNaN(days)) return "Unknown";
+  if (days <= 3) return "0-3d";
+  if (days <= 7) return "4-7d";
+  if (days <= 14) return "8-14d";
+  if (days <= 30) return "15-30d";
+  return "31+d";
 }
 
 /**
@@ -215,7 +303,7 @@ function computeRewardETA(b: any, settings: any) {
  * 2025-12-15    email@gmx.com    5051780387    6635        Hotel Name    6,066.89    2026-03-12    2026-03-13    120.00    confirmed    Genius Level 1
  * 2025-12-15    email@gmx.com    5051780387    6635        Hotel Name    6,066.89    2026-03-12    2026-03-13    120.00    confirmed    Genius Level 2    Copa    2026-05-20
  */
-function parseBookingLine(line: string) {
+function parseBookingLine(line: string, rewardTypes = DEFAULT_REWARD_TYPES) {
   const raw = (line || "").trim();
   if (!raw) return null;
   const parts = raw.split("\t").map((x) => (x ?? "").trim());
@@ -233,7 +321,7 @@ function parseBookingLine(line: string) {
   const createdAt = parts[0] || "";
   const email = safeLower(parts[1] || "");
   const bookingNo = String(parts[2] || "");
-  const pin = String(parts[3] || "");
+  const pin = String(parts[3] || "").padStart(4, "0");
 
   const hotelId = String(parts[4] || "");
   const hotelName = parts[5] || "";
@@ -254,7 +342,7 @@ function parseBookingLine(line: string) {
 
   const status = normalizeStatus(parts[statusIdx] || "");
 
-  // tail: Level + optional Type + optional RewardPaidOn (ISO date)
+  // tail: Level + optional Type + optional RewardPaidOn (ISO date) + optional Airline
   const tail = parts.slice(statusIdx + 1).filter(Boolean);
 
   let rewardType: any = "Booking";
@@ -267,8 +355,8 @@ function parseBookingLine(line: string) {
       rewardPaidOn = tok;
       continue;
     }
-    const t = normalizeRewardType(tok);
-    if ((REWARD_TYPES as readonly string[]).includes(t) && safeLower(tok) === safeLower(t)) {
+    const t = normalizeRewardType(tok, rewardTypes);
+    if (rewardTypes.some((rt: any) => safeLower(rt.name) === safeLower(t))) {
       rewardType = t;
       continue;
     }
@@ -277,6 +365,7 @@ function parseBookingLine(line: string) {
 
   // Level should be "Genius Level 1/2/3" (not a date). Prefer a clean extracted label.
   const level = extractGeniusLevel(tailRemainder);
+  const airlineToken = tailRemainder.find((t) => !/genius\s*level/i.test(t)) || "";
 
   if (!createdAt || !email || !bookingNo) return null;
 
@@ -292,16 +381,18 @@ function parseBookingLine(line: string) {
     checkOut,
     promoCode,
     rewardAmount,
+    rewardCurrency: "USD",
     status,
     level,
     rewardType,
+    airline: airlineToken,
     rewardPaidOn,
     note: "",
     _raw: raw,
   };
 }
 
-function parsePaste(text: string) {
+function parsePaste(text: string, rewardTypes = DEFAULT_REWARD_TYPES) {
   const lines = (text || "")
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -311,7 +402,7 @@ function parsePaste(text: string) {
   const errors: any[] = [];
 
   for (let i = 0; i < lines.length; i++) {
-    const row = parseBookingLine(lines[i]);
+    const row = parseBookingLine(lines[i], rewardTypes);
     if (row) parsed.push(row);
     else errors.push({ line: i + 1, raw: lines[i] });
   }
@@ -359,6 +450,40 @@ function parseAccountsPaste(text: string) {
   return { rows, errors };
 }
 
+function parseSpentPaste(text: string) {
+  const lines = (text || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const rows: Array<{ date: string; email: string; amount: number; note: string }> = [];
+  const errors: Array<{ line: number; raw: string }> = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const parts = raw.includes("\t")
+      ? raw.split("\t")
+      : raw.includes(";")
+      ? raw.split(";")
+      : raw.includes(",")
+      ? raw.split(",")
+      : raw.split(/\s+/);
+
+    const date = String(parts[0] || "").trim();
+    const email = safeLower(parts[1] || "");
+    const amountRaw = parts[2];
+    const note = parts.slice(3).join(" ").trim();
+
+    if (!isISODateLike(date) || !email || !email.includes("@") || !isNumericLike(amountRaw)) {
+      errors.push({ line: i + 1, raw });
+      continue;
+    }
+    rows.push({ date, email, amount: parseMoney(amountRaw), note });
+  }
+
+  return { rows, errors };
+}
+
 // ----------------------- seed -----------------------
 const SEED: any = {
   settings: {
@@ -371,16 +496,92 @@ const SEED: any = {
     hotelTechBlockTotal: 3,
     rewardDaysBooking: 14,
     rewardDaysOther: 64,
+    rewardTypes: DEFAULT_REWARD_TYPES.map((r) => ({ ...r })),
     autoCreateFromImport: true,
     autoWriteTechBlocks: true,
   },
   database: [
-    { email: "demo1@mail.com", password: "pass-demo-1", manualStatus: "Активен", notes: "" },
-    { email: "demo2@mail.com", password: "pass-demo-2", manualStatus: "Активен", notes: "" },
+    { email: "demo1@mail.com", password: "pass-demo-1", manualStatus: "Активен", notes: "", createdAt: "2025-02-01" },
+    { email: "demo2@mail.com", password: "pass-demo-2", manualStatus: "Активен", notes: "", createdAt: "2025-02-02" },
+    { email: "demo3@mail.com", password: "pass-demo-3", manualStatus: "Активен", notes: "", createdAt: "2025-02-03" },
+    { email: "demo4@mail.com", password: "pass-demo-4", manualStatus: "Активен", notes: "", createdAt: "2025-02-04" },
+    { email: "demo5@mail.com", password: "", manualStatus: "Активен", notes: "", createdAt: "2025-02-05" },
+    { email: "demo6@mail.com", password: "pass-demo-6", manualStatus: "Активен", notes: "", createdAt: "2025-02-05" },
+    { email: "demo7@mail.com", password: "pass-demo-7", manualStatus: "Активен", notes: "", createdAt: "2025-02-06" },
+    { email: "demo8@mail.com", password: "", manualStatus: "Активен", notes: "", createdAt: "2025-02-07" },
+    { email: "demo9@mail.com", password: "pass-demo-9", manualStatus: "Активен", notes: "", createdAt: "2025-02-08" },
+    { email: "demo10@mail.com", password: "pass-demo-10", manualStatus: "Активен", notes: "", createdAt: "2025-02-08" },
+    { email: "demo11@mail.com", password: "pass-demo-11", manualStatus: "Активен", notes: "", createdAt: "2025-02-09" },
+    { email: "demo12@mail.com", password: "", manualStatus: "Активен", notes: "", createdAt: "2025-02-10" },
   ],
   hotels: [{ hotelId: "74", name: "The Bower Coronado", manualStatus: "OK", notes: "" }],
-  bookings: [],
-  sales: [],
+  bookings: [
+    {
+      bookingId: uid(),
+      createdAt: "2025-02-10",
+      email: "demo1@mail.com",
+      bookingNo: "BK1001",
+      pin: "1122",
+      hotelId: "74",
+      hotelNameSnapshot: "The Bower Coronado",
+      cost: 320,
+      checkIn: "2025-02-12",
+      checkOut: "2025-02-13",
+      promoCode: "",
+      rewardAmount: 40,
+      rewardType: "Booking",
+      rewardPaidOn: "",
+      status: "Confirmed",
+      level: "Genius Level 1",
+      note: "",
+      _raw: "",
+    },
+    {
+      bookingId: uid(),
+      createdAt: "2025-02-11",
+      email: "demo2@mail.com",
+      bookingNo: "BK1002",
+      pin: "2211",
+      hotelId: "74",
+      hotelNameSnapshot: "The Bower Coronado",
+      cost: 540,
+      checkIn: "2025-02-14",
+      checkOut: "2025-02-16",
+      promoCode: "",
+      rewardAmount: 60,
+      rewardType: "Copa",
+      rewardPaidOn: "2025-04-21",
+      status: "Completed",
+      level: "Genius Level 2",
+      note: "",
+      _raw: "",
+    },
+    {
+      bookingId: uid(),
+      createdAt: "2025-02-12",
+      email: "demo5@mail.com",
+      bookingNo: "BK1003",
+      pin: "3344",
+      hotelId: "74",
+      hotelNameSnapshot: "The Bower Coronado",
+      cost: 280,
+      checkIn: "2025-02-18",
+      checkOut: "2025-02-19",
+      promoCode: "",
+      rewardAmount: 0,
+      rewardType: "Booking",
+      rewardPaidOn: "",
+      status: "Cancelled",
+      level: "Genius Level 1",
+      note: "",
+      _raw: "",
+    },
+  ],
+  sales: [
+    { id: uid(), date: "2025-02-12", email: "demo1@mail.com", amount: 15, note: "Taxi" },
+    { id: uid(), date: "2025-02-15", email: "demo2@mail.com", amount: 25, note: "Support" },
+    { id: uid(), date: "2025-02-20", email: "demo7@mail.com", amount: 10, note: "SIM" },
+  ],
   audit: [],
   lastImport: null,
   lastRawImport: null,
@@ -412,19 +613,20 @@ function deriveModel(state: any) {
   }
 
   // Hotel stats
-  const hotelStats = new Map<string, { total: number; confirmed: number; cancelled: number }>();
+  const hotelStats = new Map<string, { total: number; confirmed: number; cancelled: number; spent: number }>();
   for (const b of bookings) {
     const id = b.hotelId || "";
     if (!id) continue;
-    if (!hotelStats.has(id)) hotelStats.set(id, { total: 0, confirmed: 0, cancelled: 0 });
+    if (!hotelStats.has(id)) hotelStats.set(id, { total: 0, confirmed: 0, cancelled: 0, spent: 0 });
     const st = hotelStats.get(id)!;
     st.total += 1;
     if (b.status === "Confirmed") st.confirmed += 1;
     if (b.status === "Cancelled") st.cancelled += 1;
+    st.spent += Number(b.cost || 0);
   }
 
   const derivedHotels = hotels.map((h: any) => {
-    const st = hotelStats.get(h.hotelId) || { total: 0, confirmed: 0, cancelled: 0 };
+    const st = hotelStats.get(h.hotelId) || { total: 0, confirmed: 0, cancelled: 0, spent: 0 };
     const techBlocked = st.cancelled >= settings.hotelTechBlockTotal;
     const manualBlocked = h.manualStatus === "BLOCK";
     const isBlocked = manualBlocked || techBlocked;
@@ -433,6 +635,7 @@ function deriveModel(state: any) {
       totalBookings: st.total,
       confirmed: st.confirmed,
       cancelled: st.cancelled,
+      spent: st.spent,
       techBlocked,
       manualBlocked,
       isBlocked,
@@ -598,10 +801,15 @@ function runSelfTestsOnce() {
 
     const line2 =
       "2025-12-15\ta@b.com\t999\t0000\t74\tHotel\t100\t2026-03-12\t2026-03-13\t80\tcancelled\tGenius Level 2\tCopa\t2026-05-20";
-    const b2: any = parseBookingLine(line2);
+    const b2: any = parseBookingLine(line2, DEFAULT_REWARD_TYPES);
     console.assert(b2.rewardType === "Copa", "type should parse from tail");
     console.assert(b2.rewardPaidOn === "2026-05-20", "rewardPaidOn should parse ISO date");
     console.assert(b2.level === "Genius Level 2", "level should not get polluted by date/type");
+
+    const line3 =
+      "2025-12-15\ta@b.com\t777\t0000\t74\tHotel\t100\t2026-03-12\t2026-03-13\t80\tconfirmed\tGenius Level 3\tAA\tAmerican Airlines";
+    const b3: any = parseBookingLine(line3, DEFAULT_REWARD_TYPES);
+    console.assert(b3.airline === "American Airlines", "airline should parse from tail");
 
     console.assert(
       computeRewardETA({ checkOut: "2026-01-01", rewardType: "Booking" }, { rewardDaysBooking: 14, rewardDaysOther: 64 }) === "2026-01-15",
@@ -616,7 +824,7 @@ function runSelfTestsOnce() {
     console.assert(bad === null, "invalid line should return null");
 
     const paste = `${line}\n${line}`;
-    const p = parsePaste(paste);
+    const p = parsePaste(paste, DEFAULT_REWARD_TYPES);
     console.assert(p.parsed.length === 2, "parsePaste should parse 2 lines");
 
     const tsv = accountsToTSV([
@@ -640,14 +848,14 @@ if (typeof window !== "undefined") {
 }
 
 // ----------------------- UI bits -----------------------
-const Badge = ({ kind, children }: any) => {
+const Badge = ({ kind, children, themeMode }: any) => {
   const map: any = {
-    active: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
-    block: "bg-rose-500/10 text-rose-400 border-rose-500/20",
-    tech: "bg-amber-500/10 text-amber-400 border-amber-500/20",
-    gold: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
-    plat: "bg-blue-400/10 text-blue-300 border-blue-400/20",
-    dim: "bg-slate-500/10 text-slate-300 border-slate-500/20",
+    active: themeMode === "dark" ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20" : "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
+    block: themeMode === "dark" ? "bg-rose-500/10 text-rose-300 border-rose-500/20" : "bg-rose-500/10 text-rose-500 border-rose-500/20",
+    tech: themeMode === "dark" ? "bg-amber-500/10 text-amber-300 border-amber-500/20" : "bg-amber-500/10 text-amber-500 border-amber-500/20",
+    gold: themeMode === "dark" ? "bg-yellow-500/10 text-yellow-300 border-yellow-500/20" : "bg-yellow-500/10 text-yellow-500 border-yellow-500/20",
+    plat: themeMode === "dark" ? "bg-blue-400/10 text-blue-200 border-blue-400/20" : "bg-blue-400/10 text-blue-500 border-blue-400/20",
+    dim: themeMode === "dark" ? "bg-slate-500/10 text-slate-400 border-slate-500/20" : "bg-slate-500/10 text-slate-500 border-slate-500/20",
   };
   return (
     <span
@@ -660,40 +868,54 @@ const Badge = ({ kind, children }: any) => {
   );
 };
 
-const StatCard = ({ title, value, subValue, icon: Icon, onClick }: any) => (
+const StatCard = ({ title, value, subValue, icon: Icon, onClick, theme }: any) => (
   <div
     onClick={onClick}
-    className="relative overflow-hidden p-6 rounded-2xl border border-slate-800 bg-slate-900/50 backdrop-blur-sm transition-all cursor-pointer hover:border-slate-700"
+    className={`relative overflow-hidden p-6 rounded-2xl border transition-all cursor-pointer ${
+      theme === "dark"
+        ? "border-slate-800 bg-gradient-to-br from-[#111827] via-[#0B1220] to-[#0B0E14] shadow-[0_10px_30px_rgba(15,23,42,0.6)] hover:border-blue-500/60"
+        : "border-slate-200 bg-white shadow-sm hover:border-slate-300"
+    }`}
   >
-    <div className="absolute top-0 right-0 p-4 opacity-10">
+    <div className={`absolute top-0 right-0 p-4 opacity-20 ${theme === "dark" ? "text-blue-400" : "text-slate-400"}`}>
       <Icon size={64} />
     </div>
     <div className="flex items-center gap-3 mb-2">
-      <div className="p-2 rounded-lg bg-white/5 border border-slate-700">
+      <div
+        className={`p-2 rounded-lg border ${
+          theme === "dark"
+            ? "bg-blue-500/10 border-blue-500/20 text-blue-300"
+            : "bg-slate-100 border-slate-200 text-slate-600"
+        }`}
+      >
         <Icon size={18} />
       </div>
-      <span className="text-slate-400 text-sm font-medium">{title}</span>
+      <span className={`text-sm font-medium ${theme === "dark" ? "text-slate-400" : "text-slate-500"}`}>{title}</span>
     </div>
     <div className="flex items-end gap-3">
-      <h3 className="text-2xl font-bold text-white tracking-tight">{value}</h3>
-      {subValue && <span className="text-xs text-slate-500 mb-1">{subValue}</span>}
+      <h3 className={`text-2xl font-bold tracking-tight ${theme === "dark" ? "text-white" : "text-slate-900"}`}>{value}</h3>
+      {subValue && <span className={`text-xs mb-1 ${theme === "dark" ? "text-slate-500" : "text-slate-500"}`}>{subValue}</span>}
     </div>
   </div>
 );
 
-function Modal({ open, title, onClose, children }: any) {
+function Modal({ open, title, onClose, children, themeMode }: any) {
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div className="absolute left-1/2 top-1/2 w-[min(980px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-800 bg-[#0B0E14] shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
-          <div className="text-white font-bold">{title}</div>
-          <button onClick={onClose} className="p-2 rounded-lg hover:bg-slate-800">
-            <X size={18} className="text-slate-400" />
+      <div
+        className={`absolute left-1/2 top-1/2 w-[min(980px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border shadow-2xl ${
+          themeMode === "dark" ? "border-slate-800 bg-[#0F172A]" : "border-slate-200 bg-white"
+        }`}
+      >
+        <div className={`flex items-center justify-between px-5 py-4 border-b ${themeMode === "dark" ? "border-slate-800" : "border-slate-200"}`}>
+          <div className={`${themeMode === "dark" ? "text-slate-100" : "text-slate-900"} font-bold`}>{title}</div>
+          <button onClick={onClose} className={`p-2 rounded-lg ${themeMode === "dark" ? "hover:bg-slate-800" : "hover:bg-slate-100"}`}>
+            <X size={18} className={`${themeMode === "dark" ? "text-slate-400" : "text-slate-500"}`} />
           </button>
         </div>
-        <div className="p-5">{children}</div>
+        <div className={`p-5 ${themeMode === "dark" ? "text-slate-200" : "text-slate-700"}`}>{children}</div>
       </div>
     </div>
   );
@@ -705,7 +927,7 @@ function Toasts({ toasts, onDismiss }: any) {
       {toasts.map((t: any) => (
         <div
           key={t.id}
-          className={`px-4 py-3 rounded-xl border shadow-lg backdrop-blur bg-slate-900/70 ${
+          className={`px-4 py-3 rounded-xl border shadow-lg backdrop-blur bg-slate-50/70 ${
             t.kind === "ok"
               ? "border-emerald-500/30"
               : t.kind === "warn"
@@ -724,12 +946,12 @@ function Toasts({ toasts, onDismiss }: any) {
               )}
             </div>
             <div className="flex-1">
-              <div className="text-sm font-bold text-white">{t.title}</div>
-              {t.msg && <div className="text-xs text-slate-400 mt-1">{t.msg}</div>}
+              <div className="text-sm font-bold text-slate-900">{t.title}</div>
+              {t.msg && <div className="text-xs text-slate-500 mt-1">{t.msg}</div>}
             </div>
             <button
               onClick={() => onDismiss(t.id)}
-              className="text-slate-400 hover:text-white text-xs"
+              className="text-slate-500 hover:text-slate-900 text-xs"
             >
               ✕
             </button>
@@ -746,11 +968,21 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [importPayload, setImportPayload] = useState("");
+  const [themeMode, setThemeMode] = useState<"dark" | "light">("dark");
+  const [trendDays, setTrendDays] = useState(30);
+  const [chainModalOpen, setChainModalOpen] = useState(false);
+  const [chainModalName, setChainModalName] = useState("");
+  const [bestHotelMode, setBestHotelMode] = useState<"cancellations" | "spend">("cancellations");
+  const [rewardModalEmail, setRewardModalEmail] = useState<string | null>(null);
 
   // Next Action UX: table mode + multi-select copy
   const [nextActionMode, setNextActionMode] = useState<"table" | "list">("table");
   const [readySelected, setReadySelected] = useState<Record<string, boolean>>(() => ({}));
   const clearReadySelected = () => setReadySelected({});
+  const [readyBalanceMin, setReadyBalanceMin] = useState("");
 
   // RawData: show only emails without passwords
   const [rawOnlyMissing, setRawOnlyMissing] = useState(false);
@@ -759,9 +991,16 @@ export default function App() {
   const [bookingStatusFilter, setBookingStatusFilter] = useState<string>("ALL");
   const [bookingTypeFilter, setBookingTypeFilter] = useState<string>("ALL");
   const [bookingMissingPaidFilter, setBookingMissingPaidFilter] = useState(false);
+  const [bookingMissingPasswordFilter, setBookingMissingPasswordFilter] = useState(false);
+  const [bookingEditMode, setBookingEditMode] = useState(false);
+  const [bookingDupOpen, setBookingDupOpen] = useState(false);
+  const [bookingDupRows, setBookingDupRows] = useState<any[]>([]);
 
   // Database filter
   const [dbOnlyMissing, setDbOnlyMissing] = useState(false);
+  const [hotelConfirmedMin, setHotelConfirmedMin] = useState("");
+  const [hotelCancelledMax, setHotelCancelledMax] = useState("");
+  const [hotelTopRatedOnly, setHotelTopRatedOnly] = useState(false);
 
   const [toasts, setToasts] = useState<any[]>([]);
   const pushToast = (kind: "ok" | "warn" | "err", title: string, msg = "") => {
@@ -836,8 +1075,46 @@ export default function App() {
     return { totalNet, totalBookings, status, blocked, missingPasswords };
   }, [model, state.bookings.length]);
 
+  const theme = useMemo(
+    () =>
+      themeMode === "dark"
+        ? {
+            bg: "bg-[#0B0E14] text-slate-200",
+            panel: "bg-[#121826] border border-slate-800 shadow-[0_8px_30px_rgba(15,23,42,0.45)]",
+            panelMuted: "bg-[#0F172A] border border-slate-800",
+            header: "bg-[#0B0E14]/90 border-slate-800",
+            sidebar: "bg-[#0F172A] border-slate-800",
+            input: "bg-[#0B1220] border-slate-700 text-slate-200",
+            button: "bg-[#0F172A] border-slate-700 text-slate-200 hover:bg-slate-800",
+            text: "text-slate-200",
+            textDim: "text-slate-400",
+            tableHead: "bg-[#0B1220] text-slate-400",
+            rowHover: "hover:bg-slate-800/40",
+            tooltip: { backgroundColor: "#0B1220", borderColor: "#1E293B", color: "#E2E8F0" },
+            grid: "#1E293B",
+            axis: "#94A3B8",
+          }
+        : {
+            bg: "bg-[#F6F7FB] text-slate-900",
+            panel: "bg-white border border-slate-200 shadow-sm",
+            panelMuted: "bg-slate-50 border border-slate-200",
+            header: "bg-white/80 border-slate-200",
+            sidebar: "bg-white border-slate-200",
+            input: "bg-white border-slate-200 text-slate-700",
+            button: "bg-white border-slate-200 text-slate-700 hover:bg-slate-50",
+            text: "text-slate-900",
+            textDim: "text-slate-500",
+            tableHead: "bg-white text-slate-500",
+            rowHover: "hover:bg-slate-50",
+            tooltip: { backgroundColor: "#FFFFFF", borderColor: "#E2E8F0", color: "#334155" },
+            grid: "#E2E8F0",
+            axis: "#94A3B8",
+          },
+    [themeMode]
+  );
+
   const netTrend = useMemo(() => {
-    const days = 30;
+    const days = trendDays;
     const end = parseDate(todayISO())!;
     const map = new Map<string, { date: string; net: number }>();
     for (let i = days - 1; i >= 0; i--) {
@@ -856,10 +1133,282 @@ export default function App() {
       if (map.has(key)) map.get(key)!.net -= Number(s.amount || 0);
     }
     return Array.from(map.values());
-  }, [state.bookings, state.sales]);
+  }, [state.bookings, state.sales, trendDays]);
+
+  const accountsByDay = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const acc of state.database) {
+      const date = String(acc.createdAt || "").slice(0, 10) || todayISO();
+      map.set(date, (map.get(date) || 0) + 1);
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, count]) => ({ date, count }));
+  }, [state.database]);
+
+  const rewardTrend = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const b of state.bookings) {
+      if (!Number(b.rewardAmount || 0)) continue;
+      const date = String(b.rewardPaidOn || b.createdAt || "").slice(0, 10);
+      if (!date) continue;
+      map.set(date, (map.get(date) || 0) + Number(b.rewardAmount || 0));
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, total]) => ({ date, total }));
+  }, [state.bookings]);
+
+  const spentTrend = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of state.sales) {
+      const date = String(s.date || "").slice(0, 10);
+      if (!date) continue;
+      map.set(date, (map.get(date) || 0) + Number(s.amount || 0));
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, total]) => ({ date, total }));
+  }, [state.sales]);
+
+  const chainStats = useMemo(() => {
+    const map = new Map<string, { total: number; cancelled: number }>();
+    for (const b of state.bookings) {
+      const chain = normalizeChainName(b.hotelNameSnapshot || b.hotelId || "");
+      if (!map.has(chain)) map.set(chain, { total: 0, cancelled: 0 });
+      const st = map.get(chain)!;
+      st.total += 1;
+      if (b.status === "Cancelled") st.cancelled += 1;
+    }
+    return Array.from(map.entries())
+      .map(([chain, st]) => ({
+        chain,
+        cancelled: st.cancelled,
+        other: st.total - st.cancelled,
+        total: st.total,
+      }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 12);
+  }, [state.bookings]);
+
+  const chainReliability = useMemo(() => {
+    return chainStats.map((c) => ({
+      ...c,
+      cancelRate: c.total ? Math.round((c.cancelled / c.total) * 100) : 0,
+    }));
+  }, [chainStats]);
+
+  const chainHotels = useMemo(() => {
+    const map = new Map<string, Map<string, { name: string; total: number; cancelled: number }>>();
+    for (const b of state.bookings) {
+      const chain = normalizeChainName(b.hotelNameSnapshot || b.hotelId || "");
+      if (!map.has(chain)) map.set(chain, new Map());
+      const hotelKey = b.hotelId || b.hotelNameSnapshot || "Unknown";
+      const hmap = map.get(chain)!;
+      if (!hmap.has(hotelKey)) hmap.set(hotelKey, { name: b.hotelNameSnapshot || b.hotelId || "Unknown", total: 0, cancelled: 0 });
+      const st = hmap.get(hotelKey)!;
+      st.total += 1;
+      if (b.status === "Cancelled") st.cancelled += 1;
+    }
+    const out: Record<string, any[]> = {};
+    for (const [chain, hmap] of map.entries()) {
+      out[chain] = Array.from(hmap.values())
+        .map((h) => ({ ...h, cancelRate: h.total ? Math.round((h.cancelled / h.total) * 100) : 0 }))
+        .sort((a, b) => a.cancelRate - b.cancelRate || b.total - a.total);
+    }
+    return out;
+  }, [state.bookings]);
+
+  const leadTimeStats = useMemo(() => {
+    const buckets = new Map<string, { total: number; cancelled: number }>();
+    for (const b of state.bookings) {
+      const lead = daysDiff(b.createdAt, b.checkIn);
+      const bucket = leadTimeBucket(lead);
+      if (!buckets.has(bucket)) buckets.set(bucket, { total: 0, cancelled: 0 });
+      const st = buckets.get(bucket)!;
+      st.total += 1;
+      if (b.status === "Cancelled") st.cancelled += 1;
+    }
+    return Array.from(buckets.entries()).map(([bucket, st]) => ({
+      bucket,
+      total: st.total,
+      cancelled: st.cancelled,
+      cancelRate: st.total ? Math.round((st.cancelled / st.total) * 100) : 0,
+    }));
+  }, [state.bookings]);
+
+  const promoStats = useMemo(() => {
+    const withPromo = { total: 0, cancelled: 0 };
+    const withoutPromo = { total: 0, cancelled: 0 };
+    for (const b of state.bookings) {
+      const hasPromo = String(b.promoCode || "").trim().length > 0;
+      const target = hasPromo ? withPromo : withoutPromo;
+      target.total += 1;
+      if (b.status === "Cancelled") target.cancelled += 1;
+    }
+    const withRate = withPromo.total ? Math.round((withPromo.cancelled / withPromo.total) * 100) : 0;
+    const withoutRate = withoutPromo.total ? Math.round((withoutPromo.cancelled / withoutPromo.total) * 100) : 0;
+    return { withPromo, withoutPromo, withRate, withoutRate };
+  }, [state.bookings]);
+
+  const bestHotels = useMemo(() => {
+    const map = new Map<string, { hotelId: string; name: string; total: number; cancelled: number }>();
+    for (const b of state.bookings) {
+      const key = b.hotelId || b.hotelNameSnapshot || "Unknown";
+      if (!map.has(key))
+        map.set(key, {
+          hotelId: b.hotelId || "",
+          name: b.hotelNameSnapshot || b.hotelId || "Unknown",
+          total: 0,
+          cancelled: 0,
+        });
+      const st = map.get(key)!;
+      st.total += 1;
+      if (b.status === "Cancelled") st.cancelled += 1;
+    }
+    return Array.from(map.values())
+      .map((h) => ({
+        ...h,
+        cancelRate: h.total ? Math.round((h.cancelled / h.total) * 100) : 0,
+      }))
+      .filter((h) => h.total >= 2)
+      .sort((a, b) => a.cancelRate - b.cancelRate || b.total - a.total)
+      .slice(0, 8);
+  }, [state.bookings]);
+
+  const bestHotelsBySpend = useMemo(() => {
+    const map = new Map<string, { name: string; total: number; cancelled: number; spent: number }>();
+    for (const b of state.bookings) {
+      const key = b.hotelId || b.hotelNameSnapshot || "Unknown";
+      if (!map.has(key)) map.set(key, { name: b.hotelNameSnapshot || b.hotelId || "Unknown", total: 0, cancelled: 0, spent: 0 });
+      const st = map.get(key)!;
+      st.total += 1;
+      st.spent += Number(b.cost || 0);
+      if (b.status === "Cancelled") st.cancelled += 1;
+    }
+    return Array.from(map.values())
+      .map((h) => ({ ...h, cancelRate: h.total ? Math.round((h.cancelled / h.total) * 100) : 0 }))
+      .filter((h) => h.total >= 2)
+      .sort((a, b) => a.cancelRate - b.cancelRate || b.spent - a.spent)
+      .slice(0, 8);
+  }, [state.bookings]);
+
+  const riskyAccounts = useMemo(() => {
+    return model.derivedAccounts
+      .map((a: any) => {
+        const risk =
+          (a.cancelledBookings || 0) * 2 +
+          (a.consecutiveCancelled || 0) * 3 +
+          (!String(a.password || "").trim() ? 3 : 0) +
+          (!a.cooldownOk ? 2 : 0);
+        return { ...a, risk };
+      })
+      .sort((a: any, b: any) => b.risk - a.risk)
+      .slice(0, 8);
+  }, [model.derivedAccounts]);
+
+  const recommendedPairs = useMemo(() => {
+    const accounts = model.accountsReady.slice(0, 6);
+    const hotels = model.hotelsEligible.slice(0, 6);
+    const pairs: Array<{ email: string; hotel: string }> = [];
+    for (let i = 0; i < Math.max(accounts.length, hotels.length); i++) {
+      const acc = accounts[i % accounts.length];
+      const hot = hotels[i % hotels.length];
+      if (acc && hot) pairs.push({ email: acc.email, hotel: hot.name || hot.hotelId });
+    }
+    return pairs.slice(0, 6);
+  }, [model.accountsReady, model.hotelsEligible]);
+
+  const rewardSummary = useMemo(() => {
+    const today = todayISO();
+    const byEmail = new Map<string, any>();
+    for (const acc of state.database) {
+      const key = safeLower(acc.email);
+      byEmail.set(key, {
+        email: acc.email,
+        password: acc.password || "",
+        accumulated: 0,
+        potential: 0,
+        nextRewardAt: "",
+        lastRewardAt: "",
+        earnedCount: 0,
+      });
+    }
+    for (const b of state.bookings) {
+      if (b.status === "Cancelled") continue;
+      if (!Number(b.rewardAmount || 0)) continue;
+      const key = safeLower(b.email);
+      if (!byEmail.has(key)) continue;
+      const eta = computeRewardETA(b, state.settings);
+      if (!eta) continue;
+      if (eta <= today) {
+        const row = byEmail.get(key);
+        row.accumulated += Number(b.rewardAmount || 0);
+        row.earnedCount += 1;
+        if (!row.lastRewardAt || eta > row.lastRewardAt) row.lastRewardAt = eta;
+      } else {
+        const row = byEmail.get(key);
+        row.potential += Number(b.rewardAmount || 0);
+        if (!row.nextRewardAt || eta < row.nextRewardAt) row.nextRewardAt = eta;
+      }
+    }
+    const salesByEmail = new Map<string, number>();
+    for (const s of state.sales) {
+      const key = safeLower(s.email);
+      salesByEmail.set(key, (salesByEmail.get(key) || 0) + Number(s.amount || 0));
+    }
+    return Array.from(byEmail.values()).map((row) => {
+      const spent = salesByEmail.get(safeLower(row.email)) || 0;
+      const daysSinceLast = row.lastRewardAt ? daysDiff(row.lastRewardAt) : null;
+      const daysUntilNext = row.nextRewardAt ? daysDiff(today, row.nextRewardAt) : null;
+      let medal = "—";
+      const totalEarned = row.accumulated;
+      if (totalEarned > 300 && row.potential === 0 && daysSinceLast !== null) {
+        if (daysSinceLast >= 40) medal = "Platinum";
+        else if (daysSinceLast >= 20) medal = "Gold";
+      } else if (totalEarned >= 200 && totalEarned <= 300 && daysSinceLast !== null) {
+        medal = daysSinceLast <= 20 ? "Bronze/Silver" : "Silver";
+      } else if (totalEarned >= 50 && totalEarned < 200) {
+        medal = "Bronze";
+      }
+      return {
+        ...row,
+        spent,
+        restAmount: totalEarned - spent,
+        daysSinceLast,
+        daysUntilNext,
+        medal,
+      };
+    });
+  }, [state.database, state.bookings, state.sales, state.settings]);
 
   // --------- MUTATIONS ----------
   const setSettings = (patch: any) => setState((prev: any) => ({ ...prev, settings: { ...prev.settings, ...patch } }));
+
+  const handleExport = () => {
+    const payload = exportStateByEmail(state);
+    downloadJSON(`ops-dash-export-${todayISO()}.json`, payload);
+    pushToast("ok", "Exported", "JSON export generated.");
+  };
+
+  const handleImport = (payload: any) => {
+    if (!payload || !Array.isArray(payload.accounts)) {
+      throw new Error("Invalid import format: missing accounts.");
+    }
+    const nextState = {
+      ...state,
+      settings: payload.settings || state.settings,
+      hotels: Array.isArray(payload.hotels) ? payload.hotels : state.hotels,
+      database: payload.accounts.map((a: any) => {
+        const { bookings, sales, ...rest } = a || {};
+        return rest;
+      }),
+      bookings: payload.accounts.flatMap((a: any) => a.bookings || []),
+      sales: payload.accounts.flatMap((a: any) => a.sales || []),
+    };
+    setState(nextState);
+    pushToast("ok", "Imported", "Database restored from JSON.");
+  };
 
   const upsertDatabaseRow = (email: string, patch: any) => {
     setState((prev: any) => {
@@ -884,7 +1433,7 @@ export default function App() {
     let summary: any = null;
 
     setState((prev: any) => {
-      const { parsed, errors } = parsePaste(text);
+      const { parsed, errors } = parsePaste(text, getRewardTypes(prev.settings));
       const now = new Date().toISOString();
 
       const next = {
@@ -917,7 +1466,13 @@ export default function App() {
         // ensure account exists
         if (!dbEmails.has(safeLower(row.email))) {
           if (prev.settings.autoCreateFromImport) {
-            next.database.push({ email: row.email, password: "", manualStatus: "Активен", notes: "AUTO_CREATED_FROM_IMPORT" });
+            next.database.push({
+              email: row.email,
+              password: "",
+              manualStatus: "Активен",
+              notes: "AUTO_CREATED_FROM_IMPORT",
+              createdAt: todayISO(),
+            });
             dbEmails.add(safeLower(row.email));
             accCreated += 1;
             next.audit.push({ id: uid(), at: now, type: "ACCOUNT_CREATE", msg: `Account auto-created: ${row.email}` });
@@ -980,7 +1535,9 @@ export default function App() {
           checkOut: row.checkOut,
           promoCode: row.promoCode || "",
           rewardAmount: row.rewardAmount || 0,
+          rewardCurrency: row.rewardCurrency || "USD",
           rewardType: row.rewardType || "Booking",
+          airline: row.airline || "",
           rewardPaidOn: row.rewardPaidOn || "",
           status: row.status,
           level: row.level || "",
@@ -1047,7 +1604,13 @@ export default function App() {
             next.audit.push({ id: uid(), at: now, type: "RAW_UPDATE", msg: `Password updated: ${r.email}` });
           }
         } else {
-          const a = { email: r.email, password: r.password || "", manualStatus: "Активен", notes: "RAW_DATA_IMPORT" };
+          const a = {
+            email: r.email,
+            password: r.password || "",
+            manualStatus: "Активен",
+            notes: "RAW_DATA_IMPORT",
+            createdAt: todayISO(),
+          };
           next.database.push(a);
           byEmail.set(key, a);
           created += 1;
@@ -1076,7 +1639,7 @@ export default function App() {
   // --------- Views ----------
   const OverviewView = () => {
     const statusData = [
-      { name: "Pending", value: model.statusCounts.Pending || 0, fill: "#64748B" },
+      { name: "Pending", value: model.statusCounts.Pending || 0, fill: "#94A3B8" },
       { name: "Confirmed", value: model.statusCounts.Confirmed || 0, fill: COLORS.success },
       { name: "Completed", value: model.statusCounts.Completed || 0, fill: COLORS.gold },
       { name: "Cancelled", value: model.statusCounts.Cancelled || 0, fill: COLORS.danger },
@@ -1085,31 +1648,46 @@ export default function App() {
     return (
       <div className="space-y-8 animate-in fade-in duration-500">
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6">
-          <StatCard title="Total Net Balance" value={money(totals.totalNet)} subValue="Bonuses − Sales" icon={Wallet} />
-          <StatCard title="Total Bookings" value={totals.totalBookings} subValue="All statuses" icon={BookOpen} onClick={() => setActiveTab("bookings")} />
-          <StatCard title="Accounts Ready" value={model.accountsReady.length} subValue="Passed all rules" icon={Zap} onClick={() => setActiveTab("next_action")} />
-          <StatCard title="Missing Passwords" value={totals.missingPasswords} subValue="Needs RawData" icon={Database} onClick={() => setActiveTab("rawdata")} />
-          <StatCard title="Blocked Accounts" value={totals.blocked} subValue="Manual + TECH" icon={ShieldAlert} onClick={() => setActiveTab("database")} />
+          <StatCard theme={themeMode} title="Total Net Balance" value={money(totals.totalNet)} subValue="Bonuses − Sales" icon={Wallet} />
+          <StatCard theme={themeMode} title="Total Bookings" value={totals.totalBookings} subValue="All statuses" icon={BookOpen} onClick={() => setActiveTab("bookings")} />
+          <StatCard theme={themeMode} title="Accounts Ready" value={model.accountsReady.length} subValue="Passed all rules" icon={Zap} onClick={() => setActiveTab("next_action")} />
+          <StatCard theme={themeMode} title="Missing Passwords" value={totals.missingPasswords} subValue="Needs RawData" icon={Database} onClick={() => setActiveTab("rawdata")} />
+          <StatCard theme={themeMode} title="Blocked Accounts" value={totals.blocked} subValue="Manual + TECH" icon={ShieldAlert} onClick={() => setActiveTab("database")} />
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
-          <div className="xl:col-span-2 bg-[#151A23] border border-slate-800 rounded-2xl p-6">
-            <h3 className="font-bold text-lg text-white mb-4">Net Trend (30d)</h3>
+          <div className={`xl:col-span-2 ${theme.panel} rounded-2xl p-6`}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className={`font-bold text-lg ${themeMode === "dark" ? "text-white" : "text-slate-900"}`}>Net Trend</h3>
+              <div className="flex items-center gap-2 text-xs">
+                {[30, 50, 365].map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => setTrendDays(d)}
+                    className={`px-2.5 py-1 rounded-full border ${
+                      trendDays === d ? "border-blue-500 text-blue-500" : "border-slate-200 text-slate-500"
+                    }`}
+                  >
+                    {d}d
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={netTrend}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1E293B" vertical={false} />
-                  <XAxis dataKey="date" stroke="#64748B" axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-                  <YAxis stroke="#64748B" axisLine={false} tickLine={false} />
-                  <RechartsTooltip contentStyle={{ backgroundColor: "#0F172A", borderColor: "#334155" }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
+                  <XAxis dataKey="date" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
+                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
+                  <RechartsTooltip contentStyle={theme.tooltip} />
                   <Area type="monotone" dataKey="net" stroke="#3B82F6" fill="#3B82F620" strokeWidth={2} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
           </div>
 
-          <div className="bg-[#151A23] border border-slate-800 rounded-2xl p-6">
-            <h3 className="font-bold text-lg text-white mb-4">Booking Status Mix</h3>
+          <div className={`${theme.panel} rounded-2xl p-6`}>
+            <h3 className={`font-bold text-lg mb-4 ${themeMode === "dark" ? "text-white" : "text-slate-900"}`}>Booking Status Mix</h3>
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -1118,52 +1696,214 @@ export default function App() {
                       <Cell key={i} fill={x.fill} />
                     ))}
                   </Pie>
-                  <RechartsTooltip contentStyle={{ backgroundColor: "#0F172A", borderColor: "#334155" }} />
+                  <RechartsTooltip contentStyle={theme.tooltip} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-          <div className="bg-[#151A23] border border-slate-800 rounded-2xl p-6">
-            <h3 className="font-bold text-lg text-white mb-4">Top Hotels (by bookings)</h3>
-            <div className="h-64 w-full">
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+          <div className={`${theme.panel} rounded-2xl p-6`}>
+            <h3 className="font-bold text-lg text-slate-900 mb-4">Accounts Registered (per day)</h3>
+            <div className="h-56 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={model.topHotels.map((h: any) => ({ name: (h.name || h.hotelId).slice(0, 18), value: h.totalBookings }))}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1E293B" vertical={false} />
-                  <XAxis dataKey="name" stroke="#64748B" axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-                  <YAxis stroke="#64748B" axisLine={false} tickLine={false} />
-                  <RechartsTooltip contentStyle={{ backgroundColor: "#0F172A", borderColor: "#334155" }} />
-                  <Bar dataKey="value" radius={[6, 6, 0, 0]} fill="#3B82F6" />
+                <BarChart data={accountsByDay}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
+                  <XAxis dataKey="date" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
+                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
+                  <RechartsTooltip contentStyle={theme.tooltip} />
+                  <Bar dataKey="count" radius={[6, 6, 0, 0]} fill="#60A5FA" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
 
-          <div className="bg-[#151A23] border border-slate-800 rounded-2xl p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-bold text-lg text-white">Top Accounts (by bookings)</h3>
-              <button
-                onClick={() => setAuditOpen(true)}
-                className="px-3 py-2 rounded-xl border border-slate-800 bg-slate-900/50 hover:bg-slate-900 text-white text-sm font-bold inline-flex items-center gap-2"
-              >
-                <History size={16} /> Audit
-              </button>
-            </div>
-            <div className="h-64 w-full">
+          <div className={`${theme.panel} rounded-2xl p-6`}>
+            <h3 className="font-bold text-lg text-slate-900 mb-4">Rewards Earned (per day)</h3>
+            <div className="h-56 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={model.topAccounts.map((a: any) => ({ name: a.email.slice(0, 18), value: a.totalBookings }))}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1E293B" vertical={false} />
-                  <XAxis dataKey="name" stroke="#64748B" axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-                  <YAxis stroke="#64748B" axisLine={false} tickLine={false} />
-                  <RechartsTooltip contentStyle={{ backgroundColor: "#0F172A", borderColor: "#334155" }} />
-                  <Bar dataKey="value" radius={[6, 6, 0, 0]} fill="#6366F1" />
-                </BarChart>
+                <AreaChart data={rewardTrend}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
+                  <XAxis dataKey="date" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
+                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
+                  <RechartsTooltip contentStyle={theme.tooltip} />
+                  <Area type="monotone" dataKey="total" stroke="#10B981" fill="#10B98120" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className={`${theme.panel} rounded-2xl p-6`}>
+            <h3 className="font-bold text-lg text-slate-900 mb-4">Spent (per day)</h3>
+            <div className="h-56 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={spentTrend}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
+                  <XAxis dataKey="date" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
+                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
+                  <RechartsTooltip contentStyle={theme.tooltip} />
+                  <Area type="monotone" dataKey="total" stroke="#F59E0B" fill="#F59E0B20" strokeWidth={2} />
+                </AreaChart>
               </ResponsiveContainer>
             </div>
           </div>
         </div>
+
+        <div className={`${theme.panel} rounded-2xl p-6`}>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="font-bold text-lg text-slate-900">Hotels by Chain (Cancelled vs Other)</h3>
+              <p className="text-xs text-slate-500">Top 12 chains by volume • stacked bars</p>
+            </div>
+          </div>
+          <div className="h-64 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={chainStats}
+                layout="vertical"
+                barSize={14}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} horizontal={false} />
+                <XAxis type="number" stroke={theme.axis} axisLine={false} tickLine={false} />
+                <YAxis type="category" dataKey="chain" stroke={theme.axis} axisLine={false} tickLine={false} width={120} />
+                <RechartsTooltip contentStyle={theme.tooltip} />
+                <Bar
+                  dataKey="other"
+                  stackId="a"
+                  fill="#3B82F6"
+                  radius={[0, 6, 6, 0]}
+                  onClick={(data: any) => {
+                    if (!data?.payload?.chain) return;
+                    setChainModalName(data.payload.chain);
+                    setChainModalOpen(true);
+                  }}
+                />
+                <Bar
+                  dataKey="cancelled"
+                  stackId="a"
+                  fill="#EF4444"
+                  radius={[0, 6, 6, 0]}
+                  onClick={(data: any) => {
+                    if (!data?.payload?.chain) return;
+                    setChainModalName(data.payload.chain);
+                    setChainModalOpen(true);
+                  }}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+          <div className={`${theme.panel} rounded-2xl p-6`}>
+            <h3 className="font-bold text-lg text-slate-900 mb-4">Lead Time vs Cancel Rate</h3>
+            <div className="h-56 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={leadTimeStats}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
+                  <XAxis dataKey="bucket" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
+                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
+                  <RechartsTooltip contentStyle={theme.tooltip} />
+                  <Bar dataKey="cancelRate" radius={[6, 6, 0, 0]} fill="#EF4444" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="mt-3 text-xs text-slate-500">Cancel rate (%) by days between booking and check-in.</div>
+          </div>
+
+          <div className={`${theme.panel} rounded-2xl p-6`}>
+            <h3 className="font-bold text-lg text-slate-900 mb-4">Promo vs No-Promo Cancels</h3>
+            <div className="space-y-3 text-xs text-slate-600">
+              <div className="flex items-center justify-between">
+                <span>With Promo</span>
+                <span className="font-mono text-rose-300">{promoStats.withRate}%</span>
+              </div>
+              <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
+                <div className="h-full bg-rose-500/60" style={{ width: `${promoStats.withRate}%` }} />
+              </div>
+              <div className="flex items-center justify-between mt-4">
+                <span>No Promo</span>
+                <span className="font-mono text-emerald-300">{promoStats.withoutRate}%</span>
+              </div>
+              <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
+                <div className="h-full bg-emerald-500/60" style={{ width: `${promoStats.withoutRate}%` }} />
+              </div>
+            </div>
+          </div>
+
+          <div className={`${theme.panel} rounded-2xl p-6`}>
+            <h3 className="font-bold text-lg text-slate-900 mb-4">Chain Reliability</h3>
+            <div className="space-y-2 text-xs text-slate-600">
+              {chainReliability.slice(0, 6).map((c) => (
+                <div key={c.chain} className="flex items-center justify-between">
+                  <span className="truncate">{c.chain}</span>
+                  <span className={`font-mono ${c.cancelRate >= 30 ? "text-rose-300" : "text-emerald-300"}`}>
+                    {c.cancelRate}% ({c.cancelled}/{c.total})
+                  </span>
+                </div>
+              ))}
+              {chainReliability.length === 0 && <div className="text-slate-500">No chain data.</div>}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+          <div className={`${theme.panel} rounded-2xl p-6`}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold text-lg text-slate-900">Best Hotels</h3>
+              <button
+                onClick={() => setBestHotelMode(bestHotelMode === "cancellations" ? "spend" : "cancellations")}
+                className="px-3 py-1 rounded-full border border-slate-200 text-xs text-slate-600"
+              >
+                {bestHotelMode === "cancellations" ? "By spend + low cancels" : "By low cancels"}
+              </button>
+            </div>
+            <div className="space-y-2 text-xs text-slate-600">
+              {(bestHotelMode === "cancellations" ? bestHotels : bestHotelsBySpend).map((h: any) => (
+                <div key={`${h.hotelId}-${h.name}`} className="flex items-center justify-between gap-3">
+                  <span className="truncate">{h.name}</span>
+                  <span className={`font-mono ${h.cancelRate >= 25 ? "text-rose-300" : "text-emerald-300"}`}>
+                    {h.cancelRate}% ({h.cancelled}/{h.total})
+                  </span>
+                </div>
+              ))}
+              {(bestHotelMode === "cancellations" ? bestHotels : bestHotelsBySpend).length === 0 && (
+                <div className="text-slate-500">Not enough data yet.</div>
+              )}
+            </div>
+          </div>
+
+          <div className={`${theme.panel} rounded-2xl p-6`}>
+            <h3 className="font-bold text-lg text-slate-900 mb-4">Risky Accounts</h3>
+            <div className="space-y-2 text-xs text-slate-600">
+              {riskyAccounts.map((a: any) => (
+                <div key={a.emailKey} className="flex items-center justify-between gap-3">
+                  <span className="truncate">{a.email}</span>
+                  <span className={`font-mono ${a.risk >= 6 ? "text-rose-300" : "text-amber-300"}`}>
+                    risk {a.risk}
+                  </span>
+                </div>
+              ))}
+              {riskyAccounts.length === 0 && <div className="text-slate-500">No accounts.</div>}
+            </div>
+          </div>
+
+          <div className={`${theme.panel} rounded-2xl p-6`}>
+            <h3 className="font-bold text-lg text-slate-900 mb-4">Recommended Next Actions</h3>
+            <div className="space-y-2 text-xs text-slate-600">
+              {recommendedPairs.map((p, idx) => (
+                <div key={`${p.email}-${idx}`} className="flex items-center justify-between gap-3">
+                  <span className="truncate">{p.email}</span>
+                  <span className="text-slate-500">→</span>
+                  <span className="truncate">{p.hotel}</span>
+                </div>
+              ))}
+              {recommendedPairs.length === 0 && <div className="text-slate-500">No eligible pairs yet.</div>}
+            </div>
+          </div>
+        </div>
+
       </div>
     );
   };
@@ -1172,29 +1912,29 @@ export default function App() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-bold text-white">Database (Accounts)</h2>
+          <h2 className="text-2xl font-bold text-slate-900">Database (Accounts)</h2>
           <p className="text-xs text-slate-500">
             Passwords приходят из <b>RawData</b>. Ручной статус <b>Блок</b> — global kill-switch.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <label className="text-xs text-slate-400 flex items-center gap-2">
+          <label className="text-xs text-slate-500 flex items-center gap-2">
             <input type="checkbox" checked={dbOnlyMissing} onChange={(e) => setDbOnlyMissing((e.target as HTMLInputElement).checked)} />
             only emails without passwords
           </label>
           <button
             onClick={() => downloadCSV("database.csv", state.database)}
-            className="px-3 py-2 rounded-xl border border-slate-800 bg-slate-900/50 hover:bg-slate-900 text-white text-sm font-bold inline-flex items-center gap-2"
+            className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-sm font-bold inline-flex items-center gap-2"
           >
             <Download size={16} /> Export
           </button>
         </div>
       </div>
 
-      <div className="bg-[#151A23] border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+      <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
         <div className="overflow-x-auto max-h-[75vh]">
-          <table className="w-full text-left text-sm text-slate-400">
-            <thead className="bg-[#0B0E14] text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
+          <table className="w-full text-left text-sm text-slate-500">
+            <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
               <tr>
                 <th className="px-6 py-4">Email</th>
                 <th className="px-6 py-4">Password</th>
@@ -1204,35 +1944,35 @@ export default function App() {
                 <th className="px-6 py-4 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800">
+            <tbody className="divide-y divide-slate-200">
               {model.derivedAccounts
                 .filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true))
                 .filter((a: any) => (dbOnlyMissing ? !String(a.password || "").trim() : true))
                 .map((a: any) => {
                   const missing = !String(a.password || "").trim();
                   return (
-                    <tr key={a.emailKey} className={`hover:bg-slate-800/40 ${missing ? "bg-rose-500/5" : ""}`}>
+                    <tr key={a.emailKey} className={`hover:bg-slate-50 ${missing ? "bg-rose-500/5" : ""}`}>
                       <td className="px-6 py-4 align-top">
-                        <div className="text-white font-bold">{a.email}</div>
+                        <div className="text-slate-900 font-bold">{a.email}</div>
                         <div className="mt-2 flex gap-2">
                           <button onClick={() => copyToClipboard(a.email)} className="text-xs text-blue-400 hover:text-blue-300">Copy Email</button>
                           <button onClick={() => copyToClipboard(a.password || "")} className="text-xs text-blue-400 hover:text-blue-300">Copy Pass</button>
                         </div>
                         <div className="mt-2 flex flex-wrap gap-2">
-                          {!a.isBlocked ? <Badge kind="active">ACTIVE</Badge> : <Badge kind="block">BLOCK</Badge>}
-                          {a.techBlocked && <Badge kind="tech">TECH</Badge>}
-                          {a.tier === "Gold" && <Badge kind="gold">GOLD</Badge>}
-                          {a.tier === "Platinum" && <Badge kind="plat">PLAT</Badge>}
-                          {a.canAddBooking ? <Badge kind="active">READY</Badge> : <Badge kind="dim">NOT READY</Badge>}
-                          {missing && <Badge kind="block">NO PASS</Badge>}
+                          {!a.isBlocked ? <Badge themeMode={themeMode} kind="active">ACTIVE</Badge> : <Badge themeMode={themeMode} kind="block">BLOCK</Badge>}
+                          {a.techBlocked && <Badge themeMode={themeMode} kind="tech">TECH</Badge>}
+                          {a.tier === "Gold" && <Badge themeMode={themeMode} kind="gold">GOLD</Badge>}
+                          {a.tier === "Platinum" && <Badge themeMode={themeMode} kind="plat">PLAT</Badge>}
+                          {a.canAddBooking ? <Badge themeMode={themeMode} kind="active">READY</Badge> : <Badge themeMode={themeMode} kind="dim">NOT READY</Badge>}
+                          {missing && <Badge themeMode={themeMode} kind="block">NO PASS</Badge>}
                         </div>
                         {a.blockReason && <div className="mt-2 text-xs text-rose-300">{a.blockReason}</div>}
                       </td>
 
                       <td className="px-6 py-4 align-top">
                         <input
-                          className={`bg-[#0B0E14] border rounded px-2 py-1 text-slate-200 w-full text-xs font-mono ${
-                            missing ? "border-rose-500/40" : "border-slate-700"
+                          className={`bg-white border rounded px-2 py-1 text-slate-700 w-full text-xs font-mono ${
+                            missing ? "border-rose-500/40" : "border-slate-200"
                           }`}
                           value={a.password || ""}
                           onChange={(e) => upsertDatabaseRow(a.email, { password: e.target.value })}
@@ -1243,7 +1983,7 @@ export default function App() {
 
                       <td className="px-6 py-4 align-top">
                         <select
-                          className="bg-[#0B0E14] border border-slate-700 rounded px-2 py-1 text-white text-xs w-full"
+                          className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-900 text-xs w-full"
                           value={a.manualStatus}
                           onChange={(e) => upsertDatabaseRow(a.email, { manualStatus: e.target.value })}
                         >
@@ -1252,7 +1992,7 @@ export default function App() {
                         </select>
                       </td>
 
-                      <td className="px-6 py-4 align-top text-xs text-slate-300">
+                      <td className="px-6 py-4 align-top text-xs text-slate-600">
                         <div className="flex justify-between"><span className="text-slate-500">Bookings</span><span className="font-bold">{a.totalBookings}</span></div>
                         <div className="flex justify-between"><span className="text-slate-500">Confirmed</span><span>{a.confirmedBookings}</span></div>
                         <div className="flex justify-between"><span className="text-slate-500">Cancelled</span><span>{a.cancelledBookings}</span></div>
@@ -1263,7 +2003,7 @@ export default function App() {
 
                       <td className="px-6 py-4 align-top">
                         <input
-                          className="bg-[#0B0E14] border border-slate-700 rounded px-2 py-1 text-slate-200 w-full text-xs"
+                          className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-full text-xs"
                           value={a.notes || ""}
                           onChange={(e) => upsertDatabaseRow(a.email, { notes: e.target.value })}
                           placeholder="notes"
@@ -1297,6 +2037,17 @@ export default function App() {
     const rows = model.derivedAccounts
       .filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true))
       .filter((a: any) => (rawOnlyMissing ? !String(a.password || "").trim() : true));
+    const cancelled = model.statusCounts.Cancelled || 0;
+    const other = (model.statusCounts.Pending || 0) + (model.statusCounts.Confirmed || 0) + (model.statusCounts.Completed || 0);
+    const duplicateMap = useMemo(() => {
+      const map = new Map<string, any[]>();
+      for (const a of state.database) {
+        const key = safeLower(a.email);
+        if (!map.has(key)) map.set(key, []);
+        map.get(key)!.push(a);
+      }
+      return map;
+    }, [state.database]);
 
     const copyMissingEmails = async () => {
       const payload = missing.map((a: any) => a.email).join("\n");
@@ -1306,28 +2057,72 @@ export default function App() {
 
     return (
       <div className="space-y-6">
-        <div className="bg-[#151A23] border border-slate-800 rounded-2xl p-6">
+        <div className={`${theme.panel} rounded-2xl p-6`}>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-bold text-slate-900 text-lg">Bookings Status (Cancelled vs Other)</h3>
+            <div className="text-xs text-slate-500">{cancelled + other} total</div>
+          </div>
+          <div className="h-56 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={[{ name: "Bookings", cancelled, other }]}
+                margin={{ left: 0, right: 12 }}
+                barSize={36}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
+                <XAxis dataKey="name" stroke={theme.axis} axisLine={false} tickLine={false} />
+                <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
+                <RechartsTooltip contentStyle={theme.tooltip} />
+                <Bar dataKey="other" stackId="a" fill="#3B82F6" radius={[6, 6, 0, 0]} />
+                <Bar dataKey="cancelled" stackId="a" fill="#EF4444" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className={`${theme.panel} rounded-2xl p-6`}>
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-indigo-500/20 rounded-lg text-indigo-400">
                 <Sheet size={20} />
               </div>
               <div>
-                <h3 className="font-bold text-white text-lg">Dashboard — RawData (accounts: email + password)</h3>
+                <h3 className="font-bold text-slate-900 text-lg">
+                  Dashboard — RawData (accounts: email + password)
+                </h3>
                 <p className="text-xs text-slate-500">
-                  Вставляй сюда все аккаунты: <span className="font-mono">email&lt;TAB&gt;password</span>. Пароли автоматически обновятся в Database и Next Action.
+                  Вставляй сюда все аккаунты: <span className="font-mono">email&lt;TAB&gt;password</span>. Пароли автоматически обновятся во всех бордах.
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-3">
-              <label className="text-xs text-slate-400 flex items-center gap-2">
+              <label className="text-xs text-slate-500 flex items-center gap-2">
                 <input type="checkbox" checked={rawOnlyMissing} onChange={(e) => setRawOnlyMissing((e.target as HTMLInputElement).checked)} />
                 show emails without passwords
               </label>
               <button
+                onClick={() => {
+                  setState((prev: any) => {
+                    const seen = new Set<string>();
+                    const nextDb = [];
+                    for (const row of prev.database) {
+                      const key = safeLower(row.email);
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      nextDb.push(row);
+                    }
+                    return { ...prev, database: nextDb };
+                  });
+                  pushToast("ok", "Duplicates removed", "Kept the first entry per email.");
+                }}
+                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-xs font-bold"
+              >
+                Delete duplicates
+              </button>
+              <button
                 onClick={copyMissingEmails}
-                className="px-3 py-2 rounded-xl border border-slate-800 bg-slate-900/50 hover:bg-slate-900 text-white text-xs font-bold"
+                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-xs font-bold"
               >
                 Copy missing emails ({missing.length})
               </button>
@@ -1336,7 +2131,7 @@ export default function App() {
 
           <div className="mt-4">
             <textarea
-              className="w-full bg-[#0B0E14] border border-slate-700 rounded-xl p-4 text-xs font-mono text-slate-200 focus:border-indigo-500 outline-none min-h-[120px]"
+              className="w-full bg-white border border-slate-200 rounded-xl p-4 text-xs font-mono text-slate-700 focus:border-indigo-500 outline-none min-h-[120px]"
               placeholder={"PASTE HERE (tab-separated from Google):\nemail1@example.com\tpassword1\nemail2@example.com\tpassword2"}
               onPaste={(e) => {
                 e.preventDefault();
@@ -1357,11 +2152,11 @@ export default function App() {
                 <span>Paste = upsert passwords + create missing accounts.</span>
               </div>
               {state.lastRawImport ? (
-                <div className="text-slate-400">
-                  Last raw import: <b className="text-slate-200">{new Date(state.lastRawImport.at).toLocaleString()}</b> • Rows{" "}
-                  <b className="text-slate-200">{state.lastRawImport.rows}</b> • Updated{" "}
-                  <b className="text-slate-200">{state.lastRawImport.updated}</b> • Created{" "}
-                  <b className="text-slate-200">{state.lastRawImport.created}</b> • Errors{" "}
+                <div className="text-slate-500">
+                  Last raw import: <b className="text-slate-700">{new Date(state.lastRawImport.at).toLocaleString()}</b> • Rows{" "}
+                  <b className="text-slate-700">{state.lastRawImport.rows}</b> • Updated{" "}
+                  <b className="text-slate-700">{state.lastRawImport.updated}</b> • Created{" "}
+                  <b className="text-slate-700">{state.lastRawImport.created}</b> • Errors{" "}
                   <b className="text-amber-300">{state.lastRawImport.errors}</b>
                 </div>
               ) : (
@@ -1371,40 +2166,101 @@ export default function App() {
           </div>
         </div>
 
-        <div className="bg-[#151A23] border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-          <div className="p-4 border-b border-slate-800 font-bold text-white flex justify-between items-center">
+        <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
+          <div className="p-4 border-b border-slate-200 font-bold text-slate-900 flex justify-between items-center">
             <span>RawData — Accounts</span>
             <span className="text-slate-500 text-sm font-normal">{rows.length} rows</span>
           </div>
 
           <div className="overflow-x-auto max-h-[72vh]">
-            <table className="w-full text-left text-sm text-slate-400">
-              <thead className="bg-[#0B0E14] text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
+            <table className="w-full text-left text-sm text-slate-500">
+              <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
                 <tr>
                   <th className="px-6 py-4">Email</th>
                   <th className="px-6 py-4">Password</th>
+                  <th className="px-6 py-4">Duplicate</th>
                   <th className="px-6 py-4">Status</th>
+                  <th className="px-6 py-4">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800">
+              <tbody className="divide-y divide-slate-200">
                 {rows.map((a: any) => {
                   const missingPass = !String(a.password || "").trim();
+                  const duplicates = duplicateMap.get(a.emailKey) || [];
+                  const isDup = duplicates.length > 1;
+                  const hasDifferentPass = isDup && new Set(duplicates.map((d) => String(d.password || ""))).size > 1;
                   return (
-                    <tr key={a.emailKey} className={`hover:bg-slate-800/40 ${missingPass ? "bg-rose-500/5" : ""}`}>
+                    <tr key={a.emailKey} className={`hover:bg-slate-50 ${missingPass ? "bg-rose-500/5" : ""}`}>
                       <td className="px-6 py-4">
-                        <div className="text-white font-semibold">{a.email}</div>
+                        <div className="text-slate-900 font-semibold">{a.email}</div>
                       </td>
-                      <td className="px-6 py-4 font-mono text-xs text-slate-200">
-                        {missingPass ? <span className="text-rose-300">—</span> : a.password}
+                      <td className="px-6 py-4 font-mono text-xs text-slate-700">
+                        <input
+                          value={a.password || ""}
+                          onChange={(e) => upsertDatabaseRow(a.email, { password: e.target.value })}
+                          className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-48"
+                          placeholder="password"
+                        />
+                      </td>
+                      <td className="px-6 py-4 text-xs">
+                        {isDup ? (
+                          <span className={`px-2 py-1 rounded-full border ${hasDifferentPass ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
+                            {hasDifferentPass ? "DUPLICATE (diff pass)" : "DUPLICATE"}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
                       </td>
                       <td className="px-6 py-4">
-                        {missingPass ? <Badge kind="block">NO PASS</Badge> : <Badge kind="active">OK</Badge>}
+                        {missingPass ? <Badge themeMode={themeMode} kind="block">NO PASS</Badge> : <Badge themeMode={themeMode} kind="active">OK</Badge>}
+                      </td>
+                      <td className="px-6 py-4 text-xs">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => pushToast("ok", "Saved", "Password updated.")}
+                            className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+                          >
+                            Save
+                          </button>
+                          {isDup && (
+                            <>
+                              <button
+                                onClick={() => {
+                                  setState((prev: any) => ({
+                                    ...prev,
+                                    database: prev.database.filter((d: any, idx: number) => {
+                                      if (safeLower(d.email) !== a.emailKey) return true;
+                                      return idx === prev.database.findIndex((x: any) => safeLower(x.email) === a.emailKey);
+                                    }),
+                                  }));
+                                }}
+                                className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+                              >
+                                Keep First
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setState((prev: any) => ({
+                                    ...prev,
+                                    database: prev.database.filter((d: any) => {
+                                      if (safeLower(d.email) !== a.emailKey) return true;
+                                      return String(d.password || "").trim() === String(a.password || "").trim();
+                                    }),
+                                  }));
+                                }}
+                                className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+                              >
+                                Keep This
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
                 })}
                 {rows.length === 0 && (
-                  <tr><td colSpan={3} className="px-6 py-10 text-center text-slate-500">No rows.</td></tr>
+                  <tr><td colSpan={6} className="px-6 py-10 text-center text-slate-500">No rows.</td></tr>
                 )}
               </tbody>
             </table>
@@ -1418,58 +2274,105 @@ export default function App() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-bold text-white">Hotels</h2>
+          <h2 className="text-2xl font-bold text-slate-900">Hotels</h2>
           <p className="text-xs text-slate-500">Отели создаются автоматически из Smart Import. TECH block: cancelled ≥ {state.settings.hotelTechBlockTotal}.</p>
         </div>
-        <button
-          onClick={() => downloadCSV("hotels.csv", state.hotels)}
-          className="px-3 py-2 rounded-xl border border-slate-800 bg-slate-900/50 hover:bg-slate-900 text-white text-sm font-bold inline-flex items-center gap-2"
-        >
-          <Download size={16} /> Export
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              setHotelTopRatedOnly(true);
+              setHotelCancelledMax("0");
+            }}
+            className="px-3 py-2 rounded-xl border border-emerald-200 text-emerald-600 text-xs font-bold hover:bg-emerald-50"
+          >
+            Top Rated
+          </button>
+          <button
+            onClick={() => downloadCSV("hotels.csv", state.hotels)}
+            className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-sm font-bold inline-flex items-center gap-2"
+          >
+            <Download size={16} /> Export
+          </button>
+        </div>
       </div>
 
-      <div className="bg-[#151A23] border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+      <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
+        <div className="p-4 border-b border-slate-200 flex flex-wrap gap-3 items-center justify-between text-xs text-slate-500">
+          <div className="flex items-center gap-2">
+            <span>Min Confirmed</span>
+            <input
+              value={hotelConfirmedMin}
+              onChange={(e) => setHotelConfirmedMin((e.target as HTMLInputElement).value)}
+              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span>Max Cancelled</span>
+            <input
+              value={hotelCancelledMax}
+              onChange={(e) => setHotelCancelledMax((e.target as HTMLInputElement).value)}
+              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
+            />
+          </div>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={hotelTopRatedOnly}
+              onChange={(e) => setHotelTopRatedOnly((e.target as HTMLInputElement).checked)}
+            />
+            only 0 cancellations
+          </label>
+        </div>
         <div className="overflow-x-auto max-h-[75vh]">
-          <table className="w-full text-left text-sm text-slate-400">
-            <thead className="bg-[#0B0E14] text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
+          <table className="w-full text-left text-sm text-slate-500">
+            <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
               <tr>
                 <th className="px-6 py-4">Hotel</th>
                 <th className="px-6 py-4">Status</th>
                 <th className="px-6 py-4">Stats</th>
+                <th className="px-6 py-4">Spent</th>
                 <th className="px-6 py-4">Notes</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800">
+            <tbody className="divide-y divide-slate-200">
               {model.derivedHotels
                 .filter((h: any) =>
                   searchTerm
                     ? safeLower(h.name).includes(safeLower(searchTerm)) || String(h.hotelId).includes(searchTerm)
                     : true
                 )
+                .filter((h: any) => {
+                  const minConfirmed = hotelConfirmedMin ? Number(hotelConfirmedMin) : null;
+                  const maxCancelled = hotelCancelledMax ? Number(hotelCancelledMax) : null;
+                  if (minConfirmed !== null && !Number.isNaN(minConfirmed) && (h.confirmed || 0) < minConfirmed) return false;
+                  if (maxCancelled !== null && !Number.isNaN(maxCancelled) && (h.cancelled || 0) > maxCancelled) return false;
+                  if (hotelTopRatedOnly && (h.cancelled || 0) > 0) return false;
+                  return true;
+                })
                 .sort((a: any, b: any) => b.totalBookings - a.totalBookings)
                 .map((h: any) => (
-                  <tr key={h.hotelId} className="hover:bg-slate-800/40">
+                  <tr key={h.hotelId} className="hover:bg-slate-50">
                     <td className="px-6 py-4">
-                      <div className="text-white font-bold">{h.name}</div>
+                      <div className="text-slate-900 font-bold">{h.name}</div>
                       <div className="text-xs text-slate-500 font-mono">{h.hotelId}</div>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-wrap gap-2">
-                        {!h.isBlocked ? <Badge kind="active">OK</Badge> : <Badge kind="block">BLOCK</Badge>}
-                        {h.techBlocked && <Badge kind="tech">TECH</Badge>}
-                        {h.manualBlocked && <Badge kind="block">MANUAL</Badge>}
+                        {!h.isBlocked ? <Badge themeMode={themeMode} kind="active">OK</Badge> : <Badge themeMode={themeMode} kind="block">BLOCK</Badge>}
+                        {h.techBlocked && <Badge themeMode={themeMode} kind="tech">TECH</Badge>}
+                        {h.manualBlocked && <Badge themeMode={themeMode} kind="block">MANUAL</Badge>}
                       </div>
                       {h.blockReason && <div className="mt-2 text-xs text-rose-300">{h.blockReason}</div>}
                     </td>
-                    <td className="px-6 py-4 text-xs text-slate-300">
+                    <td className="px-6 py-4 text-xs text-slate-600">
                       <div className="flex justify-between"><span className="text-slate-500">Total</span><span className="font-bold">{h.totalBookings}</span></div>
                       <div className="flex justify-between"><span className="text-slate-500">Confirmed</span><span>{h.confirmed}</span></div>
                       <div className="flex justify-between"><span className="text-slate-500">Cancelled</span><span>{h.cancelled}</span></div>
                     </td>
+                    <td className="px-6 py-4 text-xs font-mono text-slate-700">{money(h.spent || 0)}</td>
                     <td className="px-6 py-4">
                       <input
-                        className="bg-[#0B0E14] border border-slate-700 rounded px-2 py-1 text-slate-200 w-full text-xs"
+                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-full text-xs"
                         value={h.notes || ""}
                         onChange={(e) => {
                           const notes = e.target.value;
@@ -1495,7 +2398,240 @@ export default function App() {
     </div>
   );
 
+  const SpentView = () => {
+    const [form, setForm] = useState({ date: todayISO(), email: "", amount: "", note: "" });
+    const [amountFilter, setAmountFilter] = useState("");
+    const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+    const addSpent = () => {
+      if (!isISODateLike(form.date) || !form.email || !form.email.includes("@") || !isNumericLike(form.amount)) {
+        pushToast("warn", "Invalid spend entry", "Use date/email/amount.");
+        return;
+      }
+      setState((prev: any) => {
+        const next = { ...prev, sales: [...prev.sales], audit: [...(prev.audit || [])] };
+        next.sales.push({
+          id: uid(),
+          date: form.date,
+          email: safeLower(form.email),
+          amount: parseMoney(form.amount),
+          note: form.note || "",
+        });
+        next.audit.push({ id: uid(), at: nowISO(), type: "SPENT_ADD", msg: `Spent added: ${form.email} / ${form.amount}` });
+        next.audit = next.audit.slice(-400);
+        return next;
+      });
+      setForm({ date: todayISO(), email: "", amount: "", note: "" });
+      pushToast("ok", "Spent added");
+    };
+
+    const ingestSpent = (text: string) => {
+      let summary: any = null;
+      setState((prev: any) => {
+        const { rows, errors } = parseSpentPaste(text);
+        const next = { ...prev, sales: [...prev.sales], audit: [...(prev.audit || [])] };
+        const now = nowISO();
+        let added = 0;
+        for (const r of rows) {
+          next.sales.push({ id: uid(), date: r.date, email: r.email, amount: r.amount, note: r.note });
+          added += 1;
+          next.audit.push({ id: uid(), at: now, type: "SPENT_ADD", msg: `Spent added: ${r.email} / ${r.amount}` });
+        }
+        for (const e of errors) {
+          next.audit.push({ id: uid(), at: now, type: "SPENT_PARSE_ERROR", msg: `Spent parse error line ${e.line}: ${e.raw}` });
+        }
+        next.audit = next.audit.slice(-400);
+        summary = { added, errors: errors.length };
+        return next;
+      });
+      if (summary) {
+        pushToast(summary.errors ? "warn" : "ok", "Spent import", `Added ${summary.added}. Errors ${summary.errors}.`);
+      }
+    };
+
+    const minAmount = amountFilter ? Number(amountFilter) : null;
+    const rows = [...state.sales]
+      .filter((s: any) => (minAmount === null || Number.isNaN(minAmount) ? true : Number(s.amount || 0) >= minAmount))
+      .sort((a: any, b: any) => {
+        const diff = Number(a.amount || 0) - Number(b.amount || 0);
+        return sortDir === "asc" ? diff : -diff;
+      });
+
+    return (
+      <div className="space-y-6">
+        <div className={`${theme.panel} rounded-2xl p-6 space-y-4`}>
+          <div>
+            <h3 className="font-bold text-slate-900 text-lg">Dashboard — Spent</h3>
+            <p className="text-xs text-slate-500">Добавляй траты: дата, email, сумма, заметка.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <input
+              type="date"
+              value={form.date}
+              onChange={(e) => setForm((p) => ({ ...p, date: (e.target as HTMLInputElement).value }))}
+              className="bg-white border border-slate-200 rounded px-3 py-2 text-slate-700 text-xs"
+            />
+            <input
+              value={form.email}
+              onChange={(e) => setForm((p) => ({ ...p, email: (e.target as HTMLInputElement).value }))}
+              placeholder="email"
+              className="bg-white border border-slate-200 rounded px-3 py-2 text-slate-700 text-xs"
+            />
+            <input
+              value={form.amount}
+              onChange={(e) => setForm((p) => ({ ...p, amount: (e.target as HTMLInputElement).value }))}
+              placeholder="amount"
+              className="bg-white border border-slate-200 rounded px-3 py-2 text-slate-700 text-xs"
+            />
+            <input
+              value={form.note}
+              onChange={(e) => setForm((p) => ({ ...p, note: (e.target as HTMLInputElement).value }))}
+              placeholder="note"
+              className="bg-white border border-slate-200 rounded px-3 py-2 text-slate-700 text-xs"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={addSpent}
+              className="px-4 py-2 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-bold"
+            >
+              Add Spent
+            </button>
+            <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
+              <span>Min amount</span>
+              <input
+                value={amountFilter}
+                onChange={(e) => setAmountFilter((e.target as HTMLInputElement).value)}
+                placeholder="0"
+                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-24"
+              />
+              <button
+                onClick={() => setSortDir(sortDir === "asc" ? "desc" : "asc")}
+                className="px-3 py-1 rounded-lg border border-slate-200 text-slate-600"
+              >
+                Sort {sortDir === "asc" ? "▲" : "▼"}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <textarea
+              className="w-full bg-white border border-slate-200 rounded-xl p-4 text-xs font-mono text-slate-700 focus:border-amber-500 outline-none min-h-[120px]"
+              placeholder={"PASTE HERE (tab-separated):\n2025-03-01\temail@example.com\t25\tTaxi"}
+              onPaste={(e) => {
+                e.preventDefault();
+                const text = e.clipboardData.getData("text/plain");
+                ingestSpent(text);
+              }}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                  const t = (e.currentTarget as HTMLTextAreaElement).value;
+                  if (t && t.trim()) ingestSpent(t);
+                  (e.currentTarget as HTMLTextAreaElement).value = "";
+                }
+              }}
+            />
+          </div>
+        </div>
+
+        <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
+          <div className="p-4 border-b border-slate-200 font-bold text-slate-900 flex justify-between items-center">
+            <span>Spent — Log</span>
+            <span className="text-slate-500 text-sm font-normal">{rows.length} rows</span>
+          </div>
+          <div className="overflow-x-auto max-h-[70vh]">
+            <table className="w-full text-left text-sm text-slate-500">
+              <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
+                <tr>
+                  <th className="px-6 py-4">Date</th>
+                  <th className="px-6 py-4">Email</th>
+                  <th className="px-6 py-4">Amount</th>
+                  <th className="px-6 py-4">Note</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {rows.map((s: any) => (
+                  <tr key={s.id} className="hover:bg-slate-50">
+                    <td className="px-6 py-4">
+                      <input
+                        type="date"
+                        value={s.date || ""}
+                        onChange={(e) => {
+                          const date = (e.target as HTMLInputElement).value;
+                          setState((prev: any) => {
+                            const next = { ...prev, sales: [...prev.sales] };
+                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
+                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], date };
+                            return next;
+                          });
+                        }}
+                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs"
+                      />
+                    </td>
+                    <td className="px-6 py-4">
+                      <input
+                        value={s.email || ""}
+                        onChange={(e) => {
+                          const email = safeLower((e.target as HTMLInputElement).value);
+                          setState((prev: any) => {
+                            const next = { ...prev, sales: [...prev.sales] };
+                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
+                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], email };
+                            return next;
+                          });
+                        }}
+                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-52"
+                      />
+                    </td>
+                    <td className="px-6 py-4">
+                      <input
+                        value={s.amount ?? ""}
+                        onChange={(e) => {
+                          const amount = parseMoney((e.target as HTMLInputElement).value);
+                          setState((prev: any) => {
+                            const next = { ...prev, sales: [...prev.sales] };
+                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
+                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], amount };
+                            return next;
+                          });
+                        }}
+                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-24"
+                      />
+                    </td>
+                    <td className="px-6 py-4">
+                      <input
+                        value={s.note || ""}
+                        onChange={(e) => {
+                          const note = (e.target as HTMLInputElement).value;
+                          setState((prev: any) => {
+                            const next = { ...prev, sales: [...prev.sales] };
+                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
+                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], note };
+                            return next;
+                          });
+                        }}
+                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-full"
+                      />
+                    </td>
+                  </tr>
+                ))}
+                {rows.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-10 text-center text-slate-500">No spent entries yet.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const BookingsView = () => {
+    const accountByEmail = new Map(model.derivedAccounts.map((a: any) => [a.emailKey, a]));
     const filtered = [...state.bookings]
       .sort((a: any, b: any) => (parseDate(b.createdAt)?.getTime() || 0) - (parseDate(a.createdAt)?.getTime() || 0))
       .filter((b: any) => {
@@ -1509,20 +2645,29 @@ export default function App() {
         );
       })
       .filter((b: any) => (bookingStatusFilter === "ALL" ? true : b.status === bookingStatusFilter))
-      .filter((b: any) => (bookingTypeFilter === "ALL" ? true : normalizeRewardType(b.rewardType) === bookingTypeFilter))
-      .filter((b: any) => (bookingMissingPaidFilter ? !String(b.rewardPaidOn || "").trim() : true));
+      .filter((b: any) =>
+        bookingTypeFilter === "ALL"
+          ? true
+          : normalizeRewardType(b.rewardType, getRewardTypes(state.settings)) === bookingTypeFilter
+      )
+      .filter((b: any) => (bookingMissingPaidFilter ? !String(b.rewardPaidOn || "").trim() : true))
+      .filter((b: any) => {
+        if (!bookingMissingPasswordFilter) return true;
+        const account = accountByEmail.get(safeLower(b.email));
+        return !String(account?.password || "").trim();
+      });
 
     return (
       <div className="space-y-6">
         {/* SMART IMPORT — SINGLE ENTRY POINT */}
-        <div className="bg-[#151A23] border border-slate-800 rounded-2xl p-6">
+        <div className={`${theme.panel} rounded-2xl p-6`}>
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-blue-500/20 rounded-lg text-blue-400">
                 <ClipboardList size={20} />
               </div>
               <div>
-                <h3 className="font-bold text-white text-lg">Bookings — Smart Import (paste = commit)</h3>
+                <h3 className="font-bold text-slate-900 text-lg">Bookings — Smart Import (paste = commit)</h3>
                 <p className="text-xs text-slate-500">
                   Вставляешь строки из Google Sheets → они сразу попадают в лог, создают Account/Hotel при необходимости и запускают перерасчёт.
                 </p>
@@ -1532,13 +2677,13 @@ export default function App() {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => downloadCSV("bookings.csv", state.bookings)}
-                className="px-3 py-2 rounded-xl border border-slate-800 bg-slate-900/50 hover:bg-slate-900 text-white text-sm font-bold inline-flex items-center gap-2"
+                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-sm font-bold inline-flex items-center gap-2"
               >
                 <Download size={16} /> Export
               </button>
               <button
                 onClick={() => setAuditOpen(true)}
-                className="px-3 py-2 rounded-xl border border-slate-800 bg-slate-900/50 hover:bg-slate-900 text-white text-sm font-bold inline-flex items-center gap-2"
+                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-sm font-bold inline-flex items-center gap-2"
               >
                 <History size={16} /> Audit
               </button>
@@ -1547,7 +2692,7 @@ export default function App() {
 
           <div className="mt-4">
             <textarea
-              className="w-full bg-[#0B0E14] border border-slate-700 rounded-xl p-4 text-xs font-mono text-slate-200 focus:border-blue-500 outline-none min-h-[120px]"
+              className="w-full bg-white border border-slate-200 rounded-xl p-4 text-xs font-mono text-slate-700 focus:border-blue-500 outline-none min-h-[120px]"
               placeholder={`PASTE HERE (tab-separated from Google):\n2025-12-15\tr...@gmx.com\t5051780387\t6635\t\tHyatt Regency...\t6,066.89\t2026-03-12\t2026-03-13\t120.00\tconfirmed\tGenius Level 1`}
               onPaste={(e) => {
                 e.preventDefault();
@@ -1566,17 +2711,17 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <RefreshCw size={14} />
                 <span>
-                  Auto-create Accounts/Hotels: <b className="text-slate-300">{state.settings.autoCreateFromImport ? "ON" : "OFF"}</b> • Auto-write TECH blocks:{" "}
-                  <b className="text-slate-300">{state.settings.autoWriteTechBlocks ? "ON" : "OFF"}</b>
+                  Auto-create Accounts/Hotels: <b className="text-slate-600">{state.settings.autoCreateFromImport ? "ON" : "OFF"}</b> • Auto-write TECH blocks:{" "}
+                  <b className="text-slate-600">{state.settings.autoWriteTechBlocks ? "ON" : "OFF"}</b>
                 </span>
               </div>
               {state.lastImport ? (
-                <div className="text-slate-400">
-                  Last import: <b className="text-slate-200">{new Date(state.lastImport.at).toLocaleString()}</b> • Added{" "}
-                  <b className="text-slate-200">{state.lastImport.added}</b> • New Acc{" "}
-                  <b className="text-slate-200">{state.lastImport.accCreated}</b> • New Hotels{" "}
-                  <b className="text-slate-200">{state.lastImport.hotelCreated}</b> • Dup{" "}
-                  <b className="text-slate-200">{state.lastImport.dupSkipped}</b> • Errors{" "}
+                <div className="text-slate-500">
+                  Last import: <b className="text-slate-700">{new Date(state.lastImport.at).toLocaleString()}</b> • Added{" "}
+                  <b className="text-slate-700">{state.lastImport.added}</b> • New Acc{" "}
+                  <b className="text-slate-700">{state.lastImport.accCreated}</b> • New Hotels{" "}
+                  <b className="text-slate-700">{state.lastImport.hotelCreated}</b> • Dup{" "}
+                  <b className="text-slate-700">{state.lastImport.dupSkipped}</b> • Errors{" "}
                   <b className="text-amber-300">{state.lastImport.errors}</b>
                 </div>
               ) : (
@@ -1587,15 +2732,15 @@ export default function App() {
         </div>
 
         {/* BOOKINGS TABLE */}
-        <div className="bg-[#151A23] border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-          <div className="p-4 border-b border-slate-800 flex flex-wrap gap-3 items-center justify-between">
-            <div className="font-bold text-white">Bookings Log (Google-like columns)</div>
+        <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
+          <div className="p-4 border-b border-slate-200 flex flex-wrap gap-3 items-center justify-between">
+            <div className="font-bold text-slate-900">Bookings Log (Google-like columns)</div>
             <div className="flex flex-wrap items-center gap-3 text-xs">
               <div className="text-slate-500">{filtered.length} / {state.bookings.length}</div>
               <select
                 value={bookingStatusFilter}
                 onChange={(e) => setBookingStatusFilter((e.target as HTMLSelectElement).value)}
-                className="bg-[#0B0E14] border border-slate-700 rounded px-2 py-1 text-slate-200"
+                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700"
               >
                 <option value="ALL">Status: ALL</option>
                 <option value="Pending">Pending</option>
@@ -1607,15 +2752,15 @@ export default function App() {
               <select
                 value={bookingTypeFilter}
                 onChange={(e) => setBookingTypeFilter((e.target as HTMLSelectElement).value)}
-                className="bg-[#0B0E14] border border-slate-700 rounded px-2 py-1 text-slate-200"
+                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700"
               >
                 <option value="ALL">Type: ALL</option>
-                {REWARD_TYPES.map((t) => (
-                  <option key={t} value={t}>{t}</option>
+                {getRewardTypes(state.settings).map((t: any) => (
+                  <option key={t.name} value={t.name}>{t.name}</option>
                 ))}
               </select>
 
-              <label className="text-slate-400 flex items-center gap-2">
+              <label className="text-slate-500 flex items-center gap-2">
                 <input
                   type="checkbox"
                   checked={bookingMissingPaidFilter}
@@ -1623,141 +2768,325 @@ export default function App() {
                 />
                 missing RewardPaidOn
               </label>
+              <label className="text-slate-500 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={bookingMissingPasswordFilter}
+                  onChange={(e) => setBookingMissingPasswordFilter((e.target as HTMLInputElement).checked)}
+                />
+                missing password
+              </label>
+              <button
+                onClick={() => setBookingEditMode((s) => !s)}
+                className="px-3 py-2 rounded-xl border border-slate-900 bg-slate-900 hover:bg-slate-800 text-slate-100 text-xs font-bold"
+              >
+                Action: {bookingEditMode ? "ON" : "OFF"}
+              </button>
+              <button
+                onClick={() => {
+                  const map = new Map<string, any[]>();
+                  for (const b of state.bookings) {
+                    const key = `${String(b.bookingNo)}::${String(b.pin || "").padStart(4, "0")}`;
+                    if (!map.has(key)) map.set(key, []);
+                    map.get(key)!.push(b);
+                  }
+                  const dup = Array.from(map.values()).filter((list) => list.length > 1);
+                  setBookingDupRows(dup.flat());
+                  setBookingDupOpen(true);
+                }}
+                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold"
+              >
+                Check duplicates
+              </button>
             </div>
           </div>
 
           <div className="overflow-x-auto max-h-[72vh]">
-            <table className="w-full text-left text-sm text-slate-400">
-              <thead className="bg-[#0B0E14] text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
+            <table className="w-full text-left text-sm text-slate-500">
+              <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
                 <tr>
                   <th className="px-6 py-4">Date</th>
                   <th className="px-6 py-4">AccountID</th>
                   <th className="px-6 py-4">BookingNo</th>
                   <th className="px-6 py-4">PIN</th>
                   <th className="px-6 py-4">Hotel</th>
+                  <th className="px-6 py-4">Password</th>
                   <th className="px-6 py-4">Cost</th>
                   <th className="px-6 py-4">CheckIn</th>
                   <th className="px-6 py-4">CheckOut</th>
                   <th className="px-6 py-4">Reward</th>
                   <th className="px-6 py-4">Type</th>
+                  <th className="px-6 py-4">Airline</th>
                   <th className="px-6 py-4">Status</th>
+                  <th className="px-6 py-4">Stat</th>
                   <th className="px-6 py-4">LEVEL</th>
                   <th className="px-6 py-4">Reward paid on</th>
                   <th className="px-6 py-4">Reward ETA</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800">
+              <tbody className="divide-y divide-slate-200">
                 {filtered.map((b: any) => {
                   const eta = computeRewardETA(b, state.settings);
                   const paidMissing = !String(b.rewardPaidOn || "").trim();
+                  const account = accountByEmail.get(safeLower(b.email));
+                  const cancelled = account?.cancelledBookings || 0;
+                  const positive = account?.positiveBookings || 0;
+                  const missingPassword = !String(account?.password || "").trim();
                   return (
-                    <tr key={b.bookingId} className={`hover:bg-slate-800/40 ${paidMissing ? "bg-amber-500/5" : ""}`}>
+                    <tr
+                      key={b.bookingId}
+                      className={`hover:bg-slate-50 ${paidMissing ? "bg-amber-500/5" : ""} ${
+                        missingPassword ? "ring-1 ring-rose-500/10" : ""
+                      }`}
+                    >
                       <td className="px-6 py-4">{b.createdAt}</td>
                       <td className="px-6 py-4">
-                        <div className="text-white font-medium">{b.email}</div>
+                        <div className={`font-medium ${missingPassword ? "text-rose-200" : "text-slate-900"}`}>{b.email}</div>
+                        {missingPassword && <div className="text-xs text-rose-400 mt-1">no password</div>}
                       </td>
-                      <td className="px-6 py-4 font-mono text-slate-200">{b.bookingNo}</td>
-                      <td className="px-6 py-4 font-mono">{b.pin}</td>
+                      <td className="px-6 py-4 font-mono text-slate-700">{b.bookingNo}</td>
+                      <td className="px-6 py-4 font-mono">{String(b.pin || "").padStart(4, "0")}</td>
                       <td className="px-6 py-4">
-                        <div className="text-white font-medium">{b.hotelNameSnapshot}</div>
+                        <div className="text-slate-900 font-medium">{b.hotelNameSnapshot}</div>
                         <div className="text-xs text-slate-500 font-mono">{b.hotelId}</div>
+                      </td>
+                      <td className="px-6 py-4 font-mono text-xs">
+                        {missingPassword ? <span className="text-rose-300">—</span> : account?.password}
                       </td>
                       <td className="px-6 py-4 font-mono">{money(b.cost)}</td>
                       <td className="px-6 py-4">{b.checkIn}</td>
                       <td className="px-6 py-4">{b.checkOut}</td>
-                      <td className="px-6 py-4 font-mono text-emerald-300">
-                        {b.rewardAmount ? money(b.rewardAmount) : <span className="text-slate-600">—</span>}
+                      <td className="px-6 py-4 font-mono text-slate-700">
+                        {bookingEditMode ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              defaultValue={b.rewardAmount}
+                              onBlur={(e) => {
+                                const rewardAmount = parseMoney((e.target as HTMLInputElement).value);
+                                setState((prev: any) => {
+                                  const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                  const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                  if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardAmount };
+                                  next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward amount updated: ${b.email} / ${b.bookingNo} → ${rewardAmount}` });
+                                  next.audit = next.audit.slice(-400);
+                                  return next;
+                                });
+                              }}
+                              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-24"
+                            />
+                            <select
+                              defaultValue={b.rewardCurrency || "USD"}
+                              onBlur={(e) => {
+                                const rewardCurrency = (e.target as HTMLSelectElement).value;
+                                setState((prev: any) => {
+                                  const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                  const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                  if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardCurrency };
+                                  next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward currency updated: ${b.email} / ${b.bookingNo} → ${rewardCurrency}` });
+                                  next.audit = next.audit.slice(-400);
+                                  return next;
+                                });
+                              }}
+                              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs"
+                            >
+                              <option value="USD">USD</option>
+                              <option value="EUR">EUR</option>
+                              <option value="GBP">GBP</option>
+                            </select>
+                          </div>
+                        ) : b.rewardAmount ? (
+                          `${b.rewardCurrency || "USD"} ${Number(b.rewardAmount || 0).toFixed(2)}`
+                        ) : (
+                          <span className="text-slate-600">—</span>
+                        )}
                       </td>
 
                       <td className="px-6 py-4">
-                        <select
-                          value={normalizeRewardType(b.rewardType || "Booking")}
-                          onChange={(e) => {
-                            const rewardType = (e.target as HTMLSelectElement).value;
-                            setState((prev: any) => {
-                              const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                              const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                              if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardType };
-                              next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward type updated: ${b.email} / ${b.bookingNo} → ${rewardType}` });
-                              next.audit = next.audit.slice(-400);
-                              return next;
-                            });
-                          }}
-                          className="bg-[#0B0E14] border border-slate-700 rounded text-xs px-2 py-1 text-slate-300 outline-none"
-                        >
-                          {REWARD_TYPES.map((t) => (
-                            <option key={t} value={t}>{t}</option>
-                          ))}
-                        </select>
+                        {bookingEditMode ? (
+                          <select
+                            defaultValue={normalizeRewardType(b.rewardType || "Booking", getRewardTypes(state.settings))}
+                            onBlur={(e) => {
+                              const rewardType = (e.target as HTMLSelectElement).value;
+                              setState((prev: any) => {
+                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardType };
+                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward type updated: ${b.email} / ${b.bookingNo} → ${rewardType}` });
+                                next.audit = next.audit.slice(-400);
+                                return next;
+                              });
+                            }}
+                            className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none"
+                          >
+                            {getRewardTypes(state.settings).map((t: any) => (
+                              <option key={t.name} value={t.name}>{t.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-slate-600">{normalizeRewardType(b.rewardType || "Booking", getRewardTypes(state.settings))}</span>
+                        )}
                       </td>
 
                       <td className="px-6 py-4">
-                        <select
-                          value={b.status}
-                          onChange={(e) => {
-                            const status = (e.target as HTMLSelectElement).value;
-                            setState((prev: any) => {
-                              const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                              const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                              if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], status };
-                              next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Booking status updated: ${b.email} / ${b.bookingNo} → ${status}` });
-                              next.audit = next.audit.slice(-400);
-                              return next;
-                            });
-                          }}
-                          className="bg-[#0B0E14] border border-slate-700 rounded text-xs px-2 py-1 text-slate-300 outline-none"
-                        >
-                          <option>Pending</option>
-                          <option>Confirmed</option>
-                          <option>Completed</option>
-                          <option>Cancelled</option>
-                        </select>
+                        {bookingEditMode ? (
+                          <input
+                            defaultValue={b.airline || ""}
+                            onBlur={(e) => {
+                              const airline = (e.target as HTMLInputElement).value;
+                              setState((prev: any) => {
+                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], airline };
+                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Airline updated: ${b.email} / ${b.bookingNo} → ${airline || "CLEAR"}` });
+                                next.audit = next.audit.slice(-400);
+                                return next;
+                              });
+                            }}
+                            placeholder="AA / Delta / Lufthansa"
+                            className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none w-40"
+                          />
+                        ) : (
+                          <span className="text-slate-600">{b.airline || "—"}</span>
+                        )}
+                      </td>
+
+                      <td className="px-6 py-4">
+                        {bookingEditMode ? (
+                          <select
+                            defaultValue={b.status}
+                            onBlur={(e) => {
+                              const status = (e.target as HTMLSelectElement).value;
+                              setState((prev: any) => {
+                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], status };
+                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Booking status updated: ${b.email} / ${b.bookingNo} → ${status}` });
+                                next.audit = next.audit.slice(-400);
+                                return next;
+                              });
+                            }}
+                            className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none"
+                          >
+                            <option>Pending</option>
+                            <option>Confirmed</option>
+                            <option>Completed</option>
+                            <option>Cancelled</option>
+                          </select>
+                        ) : (
+                          <div className="text-xs text-slate-600">{b.status}</div>
+                        )}
                         <div className="mt-2">
                           {b.status === "Confirmed" ? (
-                            <Badge kind="active">CONFIRMED</Badge>
+                            <Badge themeMode={themeMode} kind="active">CONFIRMED</Badge>
                           ) : b.status === "Pending" ? (
-                            <Badge kind="dim">PENDING</Badge>
+                            <Badge themeMode={themeMode} kind="dim">PENDING</Badge>
                           ) : b.status === "Completed" ? (
-                            <Badge kind="gold">COMPLETED</Badge>
+                            <Badge themeMode={themeMode} kind="gold">COMPLETED</Badge>
                           ) : b.status === "Cancelled" ? (
-                            <Badge kind="block">CANCELLED</Badge>
+                            <Badge themeMode={themeMode} kind="block">CANCELLED</Badge>
                           ) : (
-                            <Badge kind="dim">{b.status}</Badge>
+                            <Badge themeMode={themeMode} kind="dim">{b.status}</Badge>
                           )}
                         </div>
+                      </td>
+
+                      <td className="px-6 py-4 text-xs font-mono">
+                        <span className="text-emerald-300">{positive}</span>
+                        <span className="text-slate-600">/</span>
+                        <span className={cancelled > 0 ? "text-rose-400" : "text-slate-500"}>{cancelled}</span>
                       </td>
 
                       <td className="px-6 py-4">{b.level || <span className="text-slate-600">—</span>}</td>
 
                       <td className="px-6 py-4">
-                        <input
-                          type="date"
-                          value={b.rewardPaidOn || ""}
-                          onChange={(e) => {
-                            const rewardPaidOn = (e.target as HTMLInputElement).value;
-                            setState((prev: any) => {
-                              const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                              const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                              if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardPaidOn };
-                              next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward paid date updated: ${b.email} / ${b.bookingNo} → ${rewardPaidOn || "CLEAR"}` });
-                              next.audit = next.audit.slice(-400);
-                              return next;
-                            });
-                          }}
-                          className={`bg-[#0B0E14] border rounded text-xs px-2 py-1 text-slate-300 outline-none ${
-                            paidMissing ? "border-amber-500/40" : "border-slate-700"
-                          }`}
-                        />
+                        {bookingEditMode ? (
+                          <input
+                            type="date"
+                            defaultValue={b.rewardPaidOn || ""}
+                            onBlur={(e) => {
+                              const rewardPaidOn = (e.target as HTMLInputElement).value;
+                              setState((prev: any) => {
+                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
+                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
+                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardPaidOn };
+                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward paid date updated: ${b.email} / ${b.bookingNo} → ${rewardPaidOn || "CLEAR"}` });
+                                next.audit = next.audit.slice(-400);
+                                return next;
+                              });
+                            }}
+                            className={`bg-white border rounded text-xs px-2 py-1 text-slate-600 outline-none ${
+                              paidMissing ? "border-amber-500/40" : "border-slate-200"
+                            }`}
+                          />
+                        ) : (
+                          <span className="text-slate-600">{b.rewardPaidOn || "—"}</span>
+                        )}
                       </td>
 
-                      <td className="px-6 py-4 font-mono text-xs text-slate-200">{eta || <span className="text-slate-600">—</span>}</td>
+                      <td className="px-6 py-4 font-mono text-xs text-slate-700">{eta || <span className="text-slate-600">—</span>}</td>
                     </tr>
                   );
                 })}
 
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={14} className="px-6 py-10 text-center text-slate-500">No bookings match current filters. Paste into Smart Import.</td>
+                    <td colSpan={17} className="px-6 py-10 text-center text-slate-500">No bookings match current filters. Paste into Smart Import.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const RewardView = () => {
+    const rows = rewardSummary.filter((r: any) =>
+      searchTerm ? safeLower(r.email).includes(safeLower(searchTerm)) : true
+    );
+
+    return (
+      <div className="space-y-6">
+        <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
+          <div className="p-4 border-b border-slate-200 font-bold text-slate-900 flex justify-between items-center">
+            <span>Reward — Accounts</span>
+            <span className="text-slate-500 text-sm font-normal">{rows.length} rows</span>
+          </div>
+          <div className="overflow-x-auto max-h-[75vh]">
+            <table className="w-full text-left text-sm text-slate-500">
+              <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
+                <tr>
+                  <th className="px-6 py-4">Account</th>
+                  <th className="px-6 py-4">Password</th>
+                  <th className="px-6 py-4">Accumulated</th>
+                  <th className="px-6 py-4">Last Reward</th>
+                  <th className="px-6 py-4">Next Reward</th>
+                  <th className="px-6 py-4">Days Left</th>
+                  <th className="px-6 py-4">Potential</th>
+                  <th className="px-6 py-4">Spent</th>
+                  <th className="px-6 py-4">Rest</th>
+                  <th className="px-6 py-4">Medal</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {rows.map((r: any) => (
+                  <tr key={r.email} className="hover:bg-slate-50 cursor-pointer" onClick={() => setRewardModalEmail(r.email)}>
+                    <td className="px-6 py-4 text-slate-900 font-semibold">{r.email}</td>
+                    <td className="px-6 py-4 font-mono text-xs text-slate-700">{r.password || "—"}</td>
+                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.accumulated)}</td>
+                    <td className="px-6 py-4 text-slate-700">{r.lastRewardAt || "—"}</td>
+                    <td className="px-6 py-4 text-slate-700">{r.nextRewardAt || "—"}</td>
+                    <td className="px-6 py-4 text-slate-700">{r.daysUntilNext ?? "—"}</td>
+                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.potential)}</td>
+                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.spent)}</td>
+                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.restAmount)}</td>
+                    <td className="px-6 py-4 text-slate-700">{r.medal}</td>
+                  </tr>
+                ))}
+                {rows.length === 0 && (
+                  <tr>
+                    <td colSpan={10} className="px-6 py-10 text-center text-slate-500">No reward data.</td>
                   </tr>
                 )}
               </tbody>
@@ -1769,7 +3098,10 @@ export default function App() {
   };
 
   const NextActionView = () => {
-    const readyList = model.accountsReady.filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true));
+    const minBalance = readyBalanceMin ? Number(readyBalanceMin) : null;
+    const readyList = model.accountsReady
+      .filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true))
+      .filter((a: any) => (minBalance === null || Number.isNaN(minBalance) ? true : Number(a.netBalance || 0) >= minBalance));
 
     const toggleOne = (emailKey: string) => {
       setReadySelected((prev) => {
@@ -1808,15 +3140,15 @@ export default function App() {
 
     return (
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 animate-in fade-in">
-        <div className="bg-[#151A23] border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-[78vh]">
-          <div className="p-6 border-b border-slate-800 bg-slate-900/50 flex justify-between items-start gap-4">
+        <div className={`${theme.panel} rounded-2xl overflow-hidden flex flex-col h-[78vh]`}>
+          <div className="p-6 border-b border-slate-200 bg-white flex justify-between items-start gap-4">
             <div>
-              <h3 className="font-bold text-white text-lg">Accounts Ready</h3>
+              <h3 className="font-bold text-slate-900 text-lg">Accounts Ready</h3>
               <p className="text-xs text-slate-500">
                 Active • Not Blocked • &lt; {state.settings.maxActiveBookings} active • Cooldown ≥ {state.settings.cooldownDays}d
               </p>
               <p className="text-[11px] text-slate-600 mt-1 font-mono">
-                Quick export format: <span className="text-slate-400">email\tpassword</span>
+                Quick export format: <span className="text-slate-500">email\tpassword</span>
               </p>
             </div>
 
@@ -1827,7 +3159,7 @@ export default function App() {
                   className={`px-3 py-2 rounded-xl border text-xs font-bold ${
                     nextActionMode === "table"
                       ? "border-blue-500/40 bg-blue-500/10 text-blue-300"
-                      : "border-slate-800 bg-slate-900/40 text-slate-300 hover:bg-slate-900"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                   }`}
                 >
                   TABLE
@@ -1837,7 +3169,7 @@ export default function App() {
                   className={`px-3 py-2 rounded-xl border text-xs font-bold ${
                     nextActionMode === "list"
                       ? "border-blue-500/40 bg-blue-500/10 text-blue-300"
-                      : "border-slate-800 bg-slate-900/40 text-slate-300 hover:bg-slate-900"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                   }`}
                 >
                   LIST
@@ -1850,18 +3182,27 @@ export default function App() {
                 </div>
                 <button
                   onClick={copySelected}
-                  className="px-3 py-2 rounded-xl border border-slate-800 bg-slate-900/50 hover:bg-slate-900 text-white text-xs font-bold"
+                  className="px-3 py-2 rounded-xl border border-slate-900 bg-slate-900 hover:bg-slate-800 text-slate-100 text-xs font-bold"
                 >
                   Copy Selected ({selectedCount})
                 </button>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                <span>Min balance</span>
+                <input
+                  value={readyBalanceMin}
+                  onChange={(e) => setReadyBalanceMin((e.target as HTMLInputElement).value)}
+                  placeholder="0"
+                  className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-24"
+                />
               </div>
             </div>
           </div>
 
           {nextActionMode === "table" ? (
             <div className="flex-1 overflow-auto">
-              <table className="w-full text-left text-sm text-slate-400">
-                <thead className="sticky top-0 bg-[#0B0E14] text-xs uppercase font-medium text-slate-500">
+              <table className="w-full text-left text-sm text-slate-500">
+                <thead className="sticky top-0 bg-white text-xs uppercase font-medium text-slate-500">
                   <tr>
                     <th className="px-4 py-3 w-10">
                       <input type="checkbox" checked={allVisibleSelected} onChange={(e) => setAllVisible((e.target as HTMLInputElement).checked)} />
@@ -1874,7 +3215,7 @@ export default function App() {
                     <th className="px-4 py-3 text-right">Copy</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800">
+                <tbody className="divide-y divide-slate-200">
                   {readyList.map((a: any) => {
                     const selected = !!readySelected[a.emailKey];
                     const canc = a.cancelledBookings || 0;
@@ -1882,7 +3223,7 @@ export default function App() {
                     return (
                       <tr
                         key={a.emailKey}
-                        className={`hover:bg-slate-800/30 cursor-pointer ${selected ? "bg-blue-500/5" : ""}`}
+                        className={`hover:bg-slate-50 cursor-pointer ${selected ? "bg-blue-500/5" : ""}`}
                         onClick={(e: any) => {
                           const tag = (e.target?.tagName || "").toLowerCase();
                           if (tag === "button" || tag === "input") return;
@@ -1898,12 +3239,12 @@ export default function App() {
                           />
                         </td>
                         <td className="px-4 py-3">
-                          <div className="text-white font-semibold">{a.email}</div>
+                          <div className="text-slate-900 font-semibold">{a.email}</div>
                           <div className="text-[11px] text-slate-600">Bookings {a.totalBookings} • Tier {a.tier}</div>
                         </td>
-                        <td className="px-4 py-3 font-mono text-slate-200 text-xs">{a.password ? a.password : <span className="text-rose-300">—</span>}</td>
-                        <td className="px-4 py-3 font-mono text-xs text-slate-200">{money(a.netBalance)}</td>
-                        <td className="px-4 py-3 text-xs text-slate-300">{a.activeBookingsCount}/{state.settings.maxActiveBookings}</td>
+                        <td className="px-4 py-3 font-mono text-slate-700 text-xs">{a.password ? a.password : <span className="text-rose-300">—</span>}</td>
+                        <td className="px-4 py-3 font-mono text-xs text-slate-700">{money(a.netBalance)}</td>
+                        <td className="px-4 py-3 text-xs text-slate-600">{a.activeBookingsCount}/{state.settings.maxActiveBookings}</td>
                         <td className="px-4 py-3 text-xs font-mono">
                           <span className="text-emerald-300">{pos}</span>
                           <span className="text-slate-600">/</span>
@@ -1915,7 +3256,7 @@ export default function App() {
                               e.stopPropagation();
                               copyOne(a);
                             }}
-                            className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-3 py-2 rounded-xl border border-slate-700"
+                            className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-xl border border-slate-200"
                           >
                             Copy row
                           </button>
@@ -1934,19 +3275,19 @@ export default function App() {
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto">
-              <table className="w-full text-left text-sm text-slate-400">
-                <tbody className="divide-y divide-slate-800">
+              <table className="w-full text-left text-sm text-slate-500">
+                <tbody className="divide-y divide-slate-200">
                   {readyList.map((a: any) => (
-                    <tr key={a.emailKey} className="hover:bg-slate-800/30 group">
+                    <tr key={a.emailKey} className="hover:bg-slate-50 group">
                       <td className="px-6 py-4">
-                        <div className="text-white font-bold">{a.email}</div>
+                        <div className="text-slate-900 font-bold">{a.email}</div>
                         <div className="text-xs text-slate-500">Bookings {a.totalBookings} • Active {a.activeBookingsCount}/{state.settings.maxActiveBookings}</div>
                         <div className="text-xs text-slate-500">Balance {money(a.netBalance)} • Tier {a.tier} • Stat {a.positiveBookings}/{a.cancelledBookings}</div>
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={() => copyToClipboard(a.email)} className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-3 py-2 rounded-xl border border-slate-700">Copy Email</button>
-                          <button onClick={() => copyToClipboard(a.password || "")} className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-3 py-2 rounded-xl border border-slate-700">Copy Pass</button>
+                          <button onClick={() => copyToClipboard(a.email)} className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-xl border border-slate-200">Copy Email</button>
+                          <button onClick={() => copyToClipboard(a.password || "")} className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-xl border border-slate-200">Copy Pass</button>
                           <button onClick={() => copyOne(a)} className="text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-200 px-3 py-2 rounded-xl border border-blue-500/30">Copy Both</button>
                         </div>
                       </td>
@@ -1963,10 +3304,10 @@ export default function App() {
           )}
         </div>
 
-        <div className="bg-[#151A23] border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-[78vh]">
-          <div className="p-6 border-b border-slate-800 bg-slate-900/50 flex justify-between items-center">
+        <div className={`${theme.panel} rounded-2xl overflow-hidden flex flex-col h-[78vh]`}>
+          <div className="p-6 border-b border-slate-200 bg-white flex justify-between items-center">
             <div>
-              <h3 className="font-bold text-white text-lg">Hotels Eligible</h3>
+              <h3 className="font-bold text-slate-900 text-lg">Hotels Eligible</h3>
               <p className="text-xs text-slate-500">Confirmed &gt; 0 • Cancelled ≤ 2 • Not blocked</p>
             </div>
             <div className="bg-blue-500/10 text-blue-400 px-3 py-1 rounded-full text-xs font-bold border border-blue-500/20">
@@ -1974,12 +3315,12 @@ export default function App() {
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">
-            <table className="w-full text-left text-sm text-slate-400">
-              <tbody className="divide-y divide-slate-800">
+            <table className="w-full text-left text-sm text-slate-500">
+              <tbody className="divide-y divide-slate-200">
                 {model.hotelsEligible.map((h: any) => (
-                  <tr key={h.hotelId} className="hover:bg-slate-800/30">
+                  <tr key={h.hotelId} className="hover:bg-slate-50">
                     <td className="px-6 py-4">
-                      <div className="text-white font-bold">{h.name}</div>
+                      <div className="text-slate-900 font-bold">{h.name}</div>
                       <div className="text-xs text-slate-500 font-mono">{h.hotelId}</div>
                     </td>
                     <td className="px-6 py-4 text-right">
@@ -1988,7 +3329,7 @@ export default function App() {
                         <span className="text-slate-600 mx-1">/</span>
                         <span className="text-rose-400">{h.cancelled} Canc</span>
                         <span className="text-slate-600 mx-1">•</span>
-                        <span className="text-slate-200">{h.totalBookings} total</span>
+                        <span className="text-slate-700">{h.totalBookings} total</span>
                       </div>
                     </td>
                   </tr>
@@ -2012,13 +3353,27 @@ export default function App() {
     { id: "database", icon: Users, label: "Database" },
     { id: "rawdata", icon: Database, label: "RawData" },
     { id: "hotels", icon: Building2, label: "Hotels" },
+    { id: "spent", icon: Wallet, label: "Spent" },
+    { id: "reward", icon: Wallet, label: "Reward" },
     { id: "next_action", icon: Activity, label: "Next Action" },
   ];
 
   return (
-    <div className="min-h-screen bg-[#0B0E14] text-slate-200 font-sans selection:bg-blue-500/30 flex">
+    <div className={`min-h-screen ${theme.bg} ${themeMode === "dark" ? "theme-dark" : "theme-light"} font-sans selection:bg-blue-500/30 flex`}>
+      <style>{`
+        .theme-dark .text-slate-900 { color: #E2E8F0; }
+        .theme-dark .text-slate-700 { color: #CBD5F5; }
+        .theme-dark .text-slate-600 { color: #94A3B8; }
+        .theme-dark .text-slate-500 { color: #64748B; }
+        .theme-dark .text-slate-400 { color: #94A3B8; }
+        .theme-dark .text-slate-300 { color: #A8B3C7; }
+        .theme-dark .bg-white { background-color: #121826; }
+        .theme-dark .bg-slate-50 { background-color: #0F172A; }
+        .theme-dark .border-slate-200 { border-color: #1E293B; }
+        .theme-dark .hover\\:bg-slate-50:hover { background-color: #1E293B; }
+      `}</style>
       {/* Sidebar */}
-      <aside className="fixed left-0 top-0 h-full w-20 bg-[#151A23] border-r border-slate-800 flex flex-col items-center py-8 z-20">
+      <aside className={`fixed left-0 top-0 h-full w-20 ${theme.sidebar} border-r flex flex-col items-center py-8 z-20`}>
         <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl mb-10 shadow-lg shadow-blue-500/20 flex items-center justify-center font-bold text-white text-xl">Ops</div>
 
         <nav className="flex flex-col gap-6 w-full">
@@ -2027,13 +3382,23 @@ export default function App() {
               key={item.id}
               onClick={() => setActiveTab(item.id)}
               className={`p-3 mx-auto rounded-xl transition-all duration-300 relative group ${
-                activeTab === item.id ? "bg-blue-600/10 text-blue-400" : "text-slate-500 hover:text-slate-300 hover:bg-slate-800"
+                activeTab === item.id
+                  ? "bg-blue-600/10 text-blue-500"
+                  : themeMode === "dark"
+                  ? "text-slate-500 hover:text-slate-200 hover:bg-slate-800/60"
+                  : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"
               }`}
               title={item.label}
             >
               <item.icon size={22} />
               {activeTab === item.id && <div className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-500 rounded-l-full" />}
-              <div className="absolute left-16 bg-slate-800 text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 border border-slate-700 ml-2">
+              <div
+                className={`absolute left-16 text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 border shadow-sm ml-2 ${
+                  themeMode === "dark"
+                    ? "bg-[#0B1220] border-slate-800 text-slate-200"
+                    : "bg-white border-slate-200 text-slate-600"
+                }`}
+              >
                 {item.label}
               </div>
             </button>
@@ -2041,10 +3406,26 @@ export default function App() {
         </nav>
 
         <div className="mt-auto flex flex-col gap-3">
-          <button onClick={() => setSettingsOpen(true)} className="p-3 mx-auto rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800" title="Settings">
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className={`p-3 mx-auto rounded-xl ${
+              themeMode === "dark"
+                ? "text-slate-500 hover:text-slate-200 hover:bg-slate-800/60"
+                : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"
+            }`}
+            title="Settings"
+          >
             <Settings size={22} />
           </button>
-          <button onClick={() => setAuditOpen(true)} className="p-3 mx-auto rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-800" title="Audit">
+          <button
+            onClick={() => setAuditOpen(true)}
+            className={`p-3 mx-auto rounded-xl ${
+              themeMode === "dark"
+                ? "text-slate-500 hover:text-slate-200 hover:bg-slate-800/60"
+                : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"
+            }`}
+            title="Audit"
+          >
             <History size={22} />
           </button>
         </div>
@@ -2052,29 +3433,53 @@ export default function App() {
 
       {/* Main */}
       <main className="pl-20 flex-1">
-        <header className="h-20 border-b border-slate-800 flex items-center justify-between px-8 bg-[#0B0E14]/80 backdrop-blur sticky top-0 z-10">
+        <header className={`h-20 border-b ${theme.header} flex items-center justify-between px-8 backdrop-blur sticky top-0 z-10`}>
           <div>
-            <h1 className="text-xl font-bold text-white flex items-center gap-2 uppercase tracking-wide">{activeTab.replace("_", " ")}</h1>
-            <p className="text-xs text-slate-500 font-mono mt-1">
+            <h1 className={`text-xl font-bold flex items-center gap-2 uppercase tracking-wide ${theme.text}`}>{activeTab.replace("_", " ")}</h1>
+            <p className={`text-xs font-mono mt-1 ${theme.textDim}`}>
               ACC: {state.database.length} • HOTELS: {state.hotels.length} • BOOKINGS: {state.bookings.length} • READY: {model.accountsReady.length}
             </p>
           </div>
 
           <div className="flex items-center gap-3">
             <div className="relative group">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-blue-400 transition-colors" size={16} />
+              <Search className={`absolute left-3 top-1/2 -translate-y-1/2 ${themeMode === "dark" ? "text-slate-500 group-focus-within:text-blue-400" : "text-slate-500 group-focus-within:text-blue-500"} transition-colors`} size={16} />
               <input
                 type="text"
                 placeholder="Global Search..."
-                className="bg-[#151A23] border border-slate-800 rounded-full pl-10 pr-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-blue-500 w-64 transition-all focus:w-96"
+                className={`rounded-full pl-10 pr-4 py-2 text-sm focus:outline-none focus:border-blue-500 w-64 transition-all focus:w-96 shadow-sm ${theme.input}`}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm((e.target as HTMLInputElement).value)}
               />
             </div>
 
             <button
+              onClick={() => setThemeMode(themeMode === "dark" ? "light" : "dark")}
+              className={`px-3 py-2 rounded-xl border text-sm font-bold inline-flex items-center gap-2 ${theme.button}`}
+              title="Toggle theme"
+            >
+              {themeMode === "dark" ? "Light" : "Dark"}
+            </button>
+            <button
+              onClick={handleExport}
+              className={`px-3 py-2 rounded-xl border text-sm font-bold inline-flex items-center gap-2 shadow-sm ${theme.button}`}
+            >
+              <Download size={16} /> Export JSON
+            </button>
+            <button
+              onClick={() => {
+                setImportOpen(true);
+                setImportError("");
+                setImportPayload("");
+              }}
+              className={`px-3 py-2 rounded-xl border text-sm font-bold inline-flex items-center gap-2 shadow-sm ${theme.button}`}
+            >
+              Import JSON
+            </button>
+
+            <button
               onClick={() => setSettingsOpen(true)}
-              className="px-3 py-2 rounded-xl border border-slate-800 bg-[#151A23] hover:bg-slate-900 text-white text-sm font-bold inline-flex items-center gap-2"
+              className={`px-3 py-2 rounded-xl border text-sm font-bold inline-flex items-center gap-2 shadow-sm ${theme.button}`}
             >
               <Settings size={16} /> Settings
             </button>
@@ -2087,12 +3492,14 @@ export default function App() {
           {activeTab === "database" && <DatabaseView />}
           {activeTab === "rawdata" && <RawDataView />}
           {activeTab === "hotels" && <HotelsView />}
+          {activeTab === "spent" && <SpentView />}
+          {activeTab === "reward" && <RewardView />}
           {activeTab === "next_action" && <NextActionView />}
         </div>
       </main>
 
       {/* Settings */}
-      <Modal open={settingsOpen} title="Rules & Automation Settings" onClose={() => setSettingsOpen(false)}>
+      <Modal open={settingsOpen} title="Rules & Automation Settings" onClose={() => setSettingsOpen(false)} themeMode={themeMode}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[
             { k: "goldThreshold", label: "Gold threshold ($)", type: "number" },
@@ -2102,32 +3509,88 @@ export default function App() {
             { k: "techBlockConsecutive", label: "Account TECH block streak", type: "number" },
             { k: "techBlockTotal", label: "Account TECH block total", type: "number" },
             { k: "hotelTechBlockTotal", label: "Hotel TECH block total", type: "number" },
-            { k: "rewardDaysBooking", label: "Reward days after CheckOut (Booking)", type: "number" },
-            { k: "rewardDaysOther", label: "Reward days after CheckOut (Copa/AA/CC)", type: "number" },
           ].map((x: any) => (
-            <div key={x.k} className="border border-slate-800 rounded-xl p-4 bg-slate-900/40">
+            <div key={x.k} className="border border-slate-200 rounded-xl p-4 bg-white">
               <div className="text-xs text-slate-500 font-bold uppercase">{x.label}</div>
               <input
                 type={x.type}
-                className="mt-2 w-full bg-[#0B0E14] border border-slate-700 rounded-lg px-3 py-2 text-slate-200 outline-none focus:border-blue-500"
+                className="mt-2 w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-700 outline-none focus:border-blue-500"
                 value={state.settings[x.k]}
                 onChange={(e) => setSettings({ [x.k]: Number((e.target as HTMLInputElement).value) })}
               />
             </div>
           ))}
 
-          <div className="border border-slate-800 rounded-xl p-4 bg-slate-900/40">
+          <div className="border border-slate-200 rounded-xl p-4 bg-white md:col-span-2">
+            <div className="text-xs text-slate-500 font-bold uppercase mb-3">Booking Reward Types</div>
+            <div className="space-y-2">
+              {getRewardTypes(state.settings).map((t: any, idx: number) => (
+                <div key={`${t.name}-${idx}`} className="grid grid-cols-1 md:grid-cols-6 gap-2 items-center">
+                  <input
+                    value={t.name}
+                    onChange={(e) => {
+                      const name = (e.target as HTMLInputElement).value;
+                      setSettings({
+                        rewardTypes: getRewardTypes(state.settings).map((r: any, i: number) =>
+                          i === idx ? { ...r, name } : r
+                        ),
+                      });
+                    }}
+                    placeholder="Type name"
+                    className="md:col-span-3 bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-700 text-sm"
+                  />
+                  <input
+                    type="number"
+                    value={t.days}
+                    onChange={(e) => {
+                      const days = Number((e.target as HTMLInputElement).value);
+                      setSettings({
+                        rewardTypes: getRewardTypes(state.settings).map((r: any, i: number) =>
+                          i === idx ? { ...r, days } : r
+                        ),
+                      });
+                    }}
+                    placeholder="Days after CheckOut"
+                    className="md:col-span-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-700 text-sm"
+                  />
+                  <button
+                    onClick={() => {
+                      const next = getRewardTypes(state.settings).filter((_: any, i: number) => i !== idx);
+                      setSettings({ rewardTypes: next.length ? next : DEFAULT_REWARD_TYPES.map((r) => ({ ...r })) });
+                    }}
+                    className="md:col-span-1 px-3 py-2 rounded-lg border border-rose-200 text-rose-600 text-sm hover:bg-rose-50"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3">
+              <button
+                onClick={() => {
+                  setSettings({
+                    rewardTypes: [...getRewardTypes(state.settings), { name: "NewType", days: 64 }],
+                  });
+                }}
+                className="px-3 py-2 rounded-lg border border-blue-200 text-blue-600 text-sm hover:bg-blue-50"
+              >
+                Add Type
+              </button>
+            </div>
+          </div>
+
+          <div className="border border-slate-200 rounded-xl p-4 bg-white">
             <div className="text-xs text-slate-500 font-bold uppercase">Auto-create from import</div>
             <div className="mt-3 flex items-center justify-between">
-              <div className="text-sm text-slate-200">Create missing accounts/hotels during paste</div>
+              <div className="text-sm text-slate-700">Create missing accounts/hotels during paste</div>
               <input type="checkbox" checked={state.settings.autoCreateFromImport} onChange={(e) => setSettings({ autoCreateFromImport: (e.target as HTMLInputElement).checked })} />
             </div>
           </div>
 
-          <div className="border border-slate-800 rounded-xl p-4 bg-slate-900/40">
+          <div className="border border-slate-200 rounded-xl p-4 bg-white">
             <div className="text-xs text-slate-500 font-bold uppercase">Auto-write TECH blocks</div>
             <div className="mt-3 flex items-center justify-between">
-              <div className="text-sm text-slate-200">When TECH triggers, force manual block</div>
+              <div className="text-sm text-slate-700">When TECH triggers, force manual block</div>
               <input type="checkbox" checked={state.settings.autoWriteTechBlocks} onChange={(e) => setSettings({ autoWriteTechBlocks: (e.target as HTMLInputElement).checked })} />
             </div>
           </div>
@@ -2139,35 +3602,78 @@ export default function App() {
               setSettingsOpen(false);
               pushToast("ok", "Saved", "Rules updated.");
             }}
-            className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl font-bold"
+            className="bg-blue-600 hover:bg-blue-500 text-slate-900 px-4 py-2 rounded-xl font-bold"
           >
             Done
           </button>
         </div>
       </Modal>
 
+      <Modal open={importOpen} title="Import JSON (restore database)" onClose={() => setImportOpen(false)} themeMode={themeMode}>
+        <div className="space-y-4">
+          <div className="text-xs text-slate-500">
+            Формат: экспорт из кнопки <b>Export JSON</b>. Можно вставить JSON или выбрать файл.
+          </div>
+          <div className="flex items-center gap-3">
+            <input
+              type="file"
+              accept="application/json"
+              onChange={(e) => {
+                const file = (e.target as HTMLInputElement).files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = () => setImportPayload(String(reader.result || ""));
+                reader.readAsText(file);
+              }}
+              className="text-xs text-slate-500"
+            />
+            <button
+              onClick={() => {
+                try {
+                  const parsed = JSON.parse(importPayload || "{}");
+                  handleImport(parsed);
+                  setImportOpen(false);
+                } catch (err: any) {
+                  setImportError(err?.message || "Import failed");
+                }
+              }}
+              className="px-3 py-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 text-xs font-bold"
+            >
+              Import now
+            </button>
+          </div>
+          <textarea
+            className="w-full bg-white border border-slate-200 rounded-xl p-4 text-xs font-mono text-slate-700 focus:border-indigo-500 outline-none min-h-[200px]"
+            placeholder="Paste JSON export here..."
+            value={importPayload}
+            onChange={(e) => setImportPayload((e.target as HTMLTextAreaElement).value)}
+          />
+          {importError && <div className="text-xs text-rose-300">{importError}</div>}
+        </div>
+      </Modal>
+
       {/* Audit */}
-      <Modal open={auditOpen} title="Audit Log (last 400 events)" onClose={() => setAuditOpen(false)}>
+      <Modal open={auditOpen} title="Audit Log (last 400 events)" onClose={() => setAuditOpen(false)} themeMode={themeMode}>
         <div className="text-xs text-slate-500 mb-3">Это твой “журнал операций”: импорты, RawData, автосоздания, дедупы, ошибки парсинга, авто-блоки.</div>
-        <div className="border border-slate-800 rounded-xl overflow-hidden">
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
           <div className="max-h-[60vh] overflow-auto">
-            <table className="w-full text-left text-xs text-slate-400">
-              <thead className="sticky top-0 bg-[#0B0E14] text-slate-500 uppercase">
+            <table className="w-full text-left text-xs text-slate-500">
+              <thead className="sticky top-0 bg-white text-slate-500 uppercase">
                 <tr>
                   <th className="px-4 py-3">Time</th>
                   <th className="px-4 py-3">Type</th>
                   <th className="px-4 py-3">Message</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800">
+              <tbody className="divide-y divide-slate-200">
                 {[...(state.audit || [])]
                   .slice()
                   .reverse()
                   .map((e: any) => (
-                    <tr key={e.id} className="hover:bg-slate-800/30">
+                    <tr key={e.id} className="hover:bg-slate-50">
                       <td className="px-4 py-3 text-slate-500">{new Date(e.at).toLocaleString()}</td>
-                      <td className="px-4 py-3 font-mono text-slate-300">{e.type}</td>
-                      <td className="px-4 py-3 text-slate-200">{e.msg}</td>
+                      <td className="px-4 py-3 font-mono text-slate-600">{e.type}</td>
+                      <td className="px-4 py-3 text-slate-700">{e.msg}</td>
                     </tr>
                   ))}
                 {(state.audit || []).length === 0 && (
@@ -2180,6 +3686,155 @@ export default function App() {
           </div>
         </div>
       </Modal>
+
+      <Modal open={bookingDupOpen} title="Booking Duplicates (BookingNo + PIN)" onClose={() => setBookingDupOpen(false)} themeMode={themeMode}>
+        <div className="text-xs text-slate-500 mb-3">Дубликаты по BookingNo и PIN (PIN приводится к 4 цифрам).</div>
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <div className="max-h-[60vh] overflow-auto">
+            <table className="w-full text-left text-xs text-slate-500">
+              <thead className="sticky top-0 bg-white text-slate-500 uppercase">
+                <tr>
+                  <th className="px-4 py-3">Email</th>
+                  <th className="px-4 py-3">BookingNo</th>
+                  <th className="px-4 py-3">PIN</th>
+                  <th className="px-4 py-3">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {bookingDupRows.map((b: any) => (
+                  <tr key={b.bookingId} className="hover:bg-slate-50">
+                    <td className="px-4 py-3 text-slate-700">{b.email}</td>
+                    <td className="px-4 py-3 font-mono text-slate-700">{b.bookingNo}</td>
+                    <td className="px-4 py-3 font-mono text-slate-700">{String(b.pin || "").padStart(4, "0")}</td>
+                    <td className="px-4 py-3 text-slate-600">{b.status}</td>
+                  </tr>
+                ))}
+                {bookingDupRows.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-8 text-center text-slate-500">No duplicates found.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={chainModalOpen} title={`Chain: ${chainModalName || ""}`} onClose={() => setChainModalOpen(false)} themeMode={themeMode}>
+        <div className="text-xs text-slate-500 mb-3">Hotels ranked by lowest cancellation rate.</div>
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <div className="max-h-[60vh] overflow-auto">
+            <table className="w-full text-left text-xs text-slate-500">
+              <thead className="sticky top-0 bg-white text-slate-500 uppercase">
+                <tr>
+                  <th className="px-4 py-3">Hotel</th>
+                  <th className="px-4 py-3">Cancel rate</th>
+                  <th className="px-4 py-3">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {(chainHotels[chainModalName] || []).map((h: any, idx: number) => (
+                  <tr key={`${h.name}-${idx}`} className="hover:bg-slate-50">
+                    <td className="px-4 py-3 text-slate-700">{h.name}</td>
+                    <td className="px-4 py-3 text-slate-700">{h.cancelRate}%</td>
+                    <td className="px-4 py-3 text-slate-700">{h.total}</td>
+                  </tr>
+                ))}
+                {(!chainModalName || (chainHotels[chainModalName] || []).length === 0) && (
+                  <tr>
+                    <td colSpan={3} className="px-4 py-8 text-center text-slate-500">No hotels found.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!rewardModalEmail}
+        title={`Account: ${rewardModalEmail || ""}`}
+        onClose={() => setRewardModalEmail(null)}
+        themeMode={themeMode}
+      >
+        {rewardModalEmail ? (
+          <div className="space-y-6">
+            <div className="text-xs text-slate-500">
+              {(() => {
+                const list = state.bookings.filter((b: any) => safeLower(b.email) === safeLower(rewardModalEmail));
+                const total = list.length;
+                const cancelled = list.filter((b: any) => b.status === "Cancelled").length;
+                const confirmed = list.filter((b: any) => b.status === "Confirmed").length;
+                const completed = list.filter((b: any) => b.status === "Completed").length;
+                return `Bookings: ${total} • Confirmed ${confirmed} • Completed ${completed} • Cancelled ${cancelled}`;
+              })()}
+            </div>
+            <div className="text-xs text-slate-500">Bookings</div>
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="max-h-[40vh] overflow-auto">
+                <table className="w-full text-left text-xs text-slate-500">
+                  <thead className="sticky top-0 bg-white text-slate-500 uppercase">
+                    <tr>
+                      <th className="px-4 py-3">Date</th>
+                      <th className="px-4 py-3">Hotel</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Reward ETA</th>
+                      <th className="px-4 py-3">Reward</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {state.bookings
+                      .filter((b: any) => safeLower(b.email) === safeLower(rewardModalEmail))
+                      .map((b: any) => (
+                        <tr key={b.bookingId} className="hover:bg-slate-50">
+                          <td className="px-4 py-3 text-slate-700">{b.createdAt}</td>
+                          <td className="px-4 py-3 text-slate-700">{b.hotelNameSnapshot}</td>
+                          <td className="px-4 py-3 text-slate-600">{b.status}</td>
+                          <td className="px-4 py-3 text-slate-600">{computeRewardETA(b, state.settings) || "—"}</td>
+                          <td className="px-4 py-3 text-slate-700">{b.rewardAmount ? money(b.rewardAmount) : "—"}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="text-xs text-slate-500">Spent</div>
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="max-h-[30vh] overflow-auto">
+                <table className="w-full text-left text-xs text-slate-500">
+                  <thead className="sticky top-0 bg-white text-slate-500 uppercase">
+                    <tr>
+                      <th className="px-4 py-3">Date</th>
+                      <th className="px-4 py-3">Amount</th>
+                      <th className="px-4 py-3">Note</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {state.sales
+                      .filter((s: any) => safeLower(s.email) === safeLower(rewardModalEmail))
+                      .map((s: any) => (
+                        <tr key={s.id} className="hover:bg-slate-50">
+                          <td className="px-4 py-3 text-slate-700">{s.date}</td>
+                          <td className="px-4 py-3 text-slate-700">{money(s.amount)}</td>
+                          <td className="px-4 py-3 text-slate-600">{s.note || "—"}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <button
+        onClick={() => setSettingsOpen(true)}
+        className="fixed right-6 bottom-24 p-3 rounded-full shadow-lg bg-blue-600 text-white hover:bg-blue-500 z-40"
+        title="Settings"
+      >
+        <Settings size={18} />
+      </button>
 
       {/* Toasts */}
       <Toasts toasts={toasts} onDismiss={(id: string) => setToasts((p) => p.filter((t: any) => t.id !== id))} />

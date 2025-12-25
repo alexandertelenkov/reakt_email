@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Ops Dash
+Comment=Launch Ops Dashboard
+Exec=/workspace/reakt_email/ops-dash-v4/start-app.sh
+Path=/workspace/reakt_email/ops-dash-v4
+Terminal=true
+Icon=utilities-terminal
