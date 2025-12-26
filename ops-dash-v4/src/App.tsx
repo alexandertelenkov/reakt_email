@@ -5,7 +5,6 @@ import {
   Wallet,
   AlertTriangle,
   Search,
-  RefreshCw,
   ClipboardList,
   LayoutDashboard,
   BookOpen,
@@ -19,6 +18,23 @@ import {
   History,
   Database,
   Sheet,
+  TrendingUp,
+  PieChart as PieChartIcon,
+  CreditCard,
+  Copy,
+  Save,
+  Terminal,
+  Edit3,
+  Command,
+  Target,
+  Trophy,
+  Ban,
+  CheckSquare,
+  Eye,
+  EyeOff,
+  Calendar,
+  FileJson,
+  Building,
 } from "lucide-react";
 import {
   BarChart,
@@ -33,29 +49,33 @@ import {
   AreaChart,
   Area,
   CartesianGrid,
+  ScatterChart,
+  Scatter,
+  LineChart,
+  Line,
 } from "recharts";
 
 /**
- * OPS DASH v4 — "Smart Import is the engine"
- *
- * Entry points:
- * 1) Bookings → Smart Import (paste from Google Sheets, tab-separated)
- * 2) Dashboard → RawData (paste accounts: email + password)
+ * OPS DASH v5.6 — "Audi Command Edition"
+ * REDESIGN: Premium Dark, Technical, High-Performance
  */
 
-const COLORS = {
-  bg: "#F6F7FB",
-  card: "#FFFFFF",
-  primary: "#3B82F6",
-  accent: "#6366F1",
-  success: "#10B981",
-  warning: "#F59E0B",
-  danger: "#EF4444",
-  text: "#FFFFFF",
-  textDim: "#94A3B8",
-  border: "#E2E8F0",
-  gold: "#FFD700",
-  plat: "#60A5FA",
+// --- COLORS & THEME CONSTANTS ---
+const AUDI_COLORS = {
+  black: "#000000",
+  darkGray: "#0A0A0A",
+  panel: "#111111",
+  panelHover: "#161616",
+  red: "#CC0000",
+  brightRed: "#F40009", // The signature Audi red
+  white: "#FFFFFF",
+  silver: "#999999",
+  text: "#E5E5E5",
+  border: "#333333",
+  borderActive: "#555555",
+  grid: "#222222",
+  success: "#10B981", // Emerald
+  warning: "#F59E0B", // Amber
 };
 
 const DEFAULT_REWARD_TYPES = [
@@ -65,6 +85,7 @@ const DEFAULT_REWARD_TYPES = [
   { name: "CC", days: 64 },
 ] as const;
 
+// --- HELPERS ---
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const uid = () => Math.random().toString(16).slice(2) + Date.now().toString(16);
 const safeLower = (s: any) => (s || "").trim().toLowerCase();
@@ -154,6 +175,7 @@ function exportStateByEmail(state: any) {
     exportedAt: nowISO(),
     settings: state.settings,
     hotels: state.hotels,
+    specialRewards: state.specialRewards || [],
     accounts,
   };
 }
@@ -171,41 +193,6 @@ function stableHotelIdFromName(name: string) {
   return `H_${base}_${tail}`;
 }
 
-function normalizeChainName(name: string) {
-  const raw = String(name || "").trim();
-  if (!raw) return "Unknown";
-  const lowered = raw.toLowerCase();
-  const known = [
-    "holiday inn",
-    "hampton",
-    "hilton",
-    "marriott",
-    "hyatt",
-    "sheraton",
-    "westin",
-    "crowne plaza",
-    "intercontinental",
-    "holiday express",
-    "radisson",
-    "wyndham",
-    "doubletree",
-    "ramada",
-    "fairfield",
-    "courtyard",
-    "residence inn",
-  ];
-  for (const k of known) {
-    if (lowered.includes(k)) {
-      return k
-        .split(" ")
-        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-        .join(" ");
-    }
-  }
-  const first = raw.split(/[\s,]/).filter(Boolean)[0] || raw;
-  return first.charAt(0).toUpperCase() + first.slice(1);
-}
-
 const KNOWN_STATUS = new Set(["pending", "confirmed", "completed", "cancelled"]);
 
 function normalizeStatus(raw: any) {
@@ -221,8 +208,6 @@ function normalizeStatus(raw: any) {
 function extractGeniusLevel(tailCells: string[]) {
   const cells = (tailCells || []).map((x) => String(x || "").trim()).filter(Boolean);
   if (cells.length === 0) return "";
-
-  // Try to lock onto the expected label, даже если рядом есть даты/мусор.
   const re = /genius\s*level\s*(1|2|3)/i;
   for (const c of cells) {
     const m = c.match(re);
@@ -231,8 +216,6 @@ function extractGeniusLevel(tailCells: string[]) {
   const joined = cells.join(" ").trim();
   const mj = joined.match(re);
   if (mj) return `Genius Level ${mj[1]}`;
-
-  // If it looks like a date or anything else, don't let it pretend to be a level.
   return "";
 }
 
@@ -286,23 +269,6 @@ function computeRewardETA(b: any, settings: any) {
   return addDaysISO(checkOut, days);
 }
 
-function leadTimeBucket(days: number | null) {
-  if (days === null || Number.isNaN(days)) return "Unknown";
-  if (days <= 3) return "0-3d";
-  if (days <= 7) return "4-7d";
-  if (days <= 14) return "8-14d";
-  if (days <= 30) return "15-30d";
-  return "31+d";
-}
-
-/**
- * Target paste columns (from Google Sheets), tab-separated:
- * Date | Email | BookingNo | PIN | HotelID | HotelName | Cost | CheckIn | CheckOut | (optional promo) | Reward | Status | Level | (optional Type) | (optional RewardPaidOn)
- *
- * Examples:
- * 2025-12-15    email@gmx.com    5051780387    6635        Hotel Name    6,066.89    2026-03-12    2026-03-13    120.00    confirmed    Genius Level 1
- * 2025-12-15    email@gmx.com    5051780387    6635        Hotel Name    6,066.89    2026-03-12    2026-03-13    120.00    confirmed    Genius Level 2    Copa    2026-05-20
- */
 function parseBookingLine(line: string, rewardTypes = DEFAULT_REWARD_TYPES) {
   const raw = (line || "").trim();
   if (!raw) return null;
@@ -342,13 +308,10 @@ function parseBookingLine(line: string, rewardTypes = DEFAULT_REWARD_TYPES) {
 
   const status = normalizeStatus(parts[statusIdx] || "");
 
-  // tail: Level + optional Type + optional RewardPaidOn (ISO date) + optional Airline
   const tail = parts.slice(statusIdx + 1).filter(Boolean);
-
   let rewardType: any = "Booking";
   let rewardPaidOn = "";
 
-  // Extract type + paid date if present
   const tailRemainder: string[] = [];
   for (const tok of tail) {
     if (isISODateLike(tok)) {
@@ -363,7 +326,6 @@ function parseBookingLine(line: string, rewardTypes = DEFAULT_REWARD_TYPES) {
     tailRemainder.push(tok);
   }
 
-  // Level should be "Genius Level 1/2/3" (not a date). Prefer a clean extracted label.
   const level = extractGeniusLevel(tailRemainder);
   const airlineToken = tailRemainder.find((t) => !/genius\s*level/i.test(t)) || "";
 
@@ -409,14 +371,6 @@ function parsePaste(text: string, rewardTypes = DEFAULT_REWARD_TYPES) {
   return { parsed, errors };
 }
 
-function tsvRow(email: string, password: string) {
-  return `${email}\t${password ?? ""}`;
-}
-
-function accountsToTSV(rows: Array<{ email: string; password?: string }>) {
-  return rows.map((a) => tsvRow(a.email, a.password || "")).join("\n");
-}
-
 function parseAccountsPaste(text: string) {
   const lines = (text || "")
     .split(/\r?\n/)
@@ -428,15 +382,13 @@ function parseAccountsPaste(text: string) {
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
-    // Prefer tabs (Google Sheets). Fallback to comma/semicolon.
-    const parts =
-      raw.includes("\t")
-        ? raw.split("\t")
-        : raw.includes(";")
-        ? raw.split(";")
-        : raw.includes(",")
-        ? raw.split(",")
-        : raw.split(/\s+/);
+    const parts = raw.includes("\t")
+      ? raw.split("\t")
+      : raw.includes(";")
+      ? raw.split(";")
+      : raw.includes(",")
+      ? raw.split(",")
+      : raw.split(/\s+/);
 
     const email = safeLower(parts[0] || "");
     const password = String(parts[1] ?? "").trim();
@@ -446,16 +398,11 @@ function parseAccountsPaste(text: string) {
     }
     rows.push({ email, password });
   }
-
   return { rows, errors };
 }
 
 function parseSpentPaste(text: string) {
-  const lines = (text || "")
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-
+  const lines = (text || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const rows: Array<{ date: string; email: string; amount: number; note: string }> = [];
   const errors: Array<{ line: number; raw: string }> = [];
 
@@ -480,11 +427,18 @@ function parseSpentPaste(text: string) {
     }
     rows.push({ date, email, amount: parseMoney(amountRaw), note });
   }
-
   return { rows, errors };
 }
 
-// ----------------------- seed -----------------------
+function tsvRow(email: string, password: string) {
+  return `${email}\t${password ?? ""}`;
+}
+
+function accountsToTSV(rows: Array<{ email: string; password?: string }>) {
+  return rows.map((a) => tsvRow(a.email, a.password || "")).join("\n");
+}
+
+// ----------------------- SEED DATA -----------------------
 const SEED: any = {
   settings: {
     goldThreshold: 300,
@@ -508,73 +462,23 @@ const SEED: any = {
     { email: "demo5@mail.com", password: "", manualStatus: "Активен", notes: "", createdAt: "2025-02-05" },
     { email: "demo6@mail.com", password: "pass-demo-6", manualStatus: "Активен", notes: "", createdAt: "2025-02-05" },
     { email: "demo7@mail.com", password: "pass-demo-7", manualStatus: "Активен", notes: "", createdAt: "2025-02-06" },
-    { email: "demo8@mail.com", password: "", manualStatus: "Активен", notes: "", createdAt: "2025-02-07" },
-    { email: "demo9@mail.com", password: "pass-demo-9", manualStatus: "Активен", notes: "", createdAt: "2025-02-08" },
-    { email: "demo10@mail.com", password: "pass-demo-10", manualStatus: "Активен", notes: "", createdAt: "2025-02-08" },
-    { email: "demo11@mail.com", password: "pass-demo-11", manualStatus: "Активен", notes: "", createdAt: "2025-02-09" },
-    { email: "demo12@mail.com", password: "", manualStatus: "Активен", notes: "", createdAt: "2025-02-10" },
   ],
   hotels: [{ hotelId: "74", name: "The Bower Coronado", manualStatus: "OK", notes: "" }],
   bookings: [
     {
-      bookingId: uid(),
-      createdAt: "2025-02-10",
-      email: "demo1@mail.com",
-      bookingNo: "BK1001",
-      pin: "1122",
-      hotelId: "74",
-      hotelNameSnapshot: "The Bower Coronado",
-      cost: 320,
-      checkIn: "2025-02-12",
-      checkOut: "2025-02-13",
-      promoCode: "",
-      rewardAmount: 40,
-      rewardType: "Booking",
-      rewardPaidOn: "",
-      status: "Confirmed",
-      level: "Genius Level 1",
-      note: "",
-      _raw: "",
+      bookingId: uid(), createdAt: "2025-02-10", email: "demo1@mail.com", bookingNo: "BK1001", pin: "1122",
+      hotelId: "74", hotelNameSnapshot: "The Bower Coronado", cost: 320, checkIn: "2025-02-12", checkOut: "2025-02-13",
+      promoCode: "", rewardAmount: 40, rewardType: "Booking", rewardPaidOn: "", status: "Confirmed", level: "Genius Level 1", note: "", _raw: "",
     },
     {
-      bookingId: uid(),
-      createdAt: "2025-02-11",
-      email: "demo2@mail.com",
-      bookingNo: "BK1002",
-      pin: "2211",
-      hotelId: "74",
-      hotelNameSnapshot: "The Bower Coronado",
-      cost: 540,
-      checkIn: "2025-02-14",
-      checkOut: "2025-02-16",
-      promoCode: "",
-      rewardAmount: 60,
-      rewardType: "Copa",
-      rewardPaidOn: "2025-04-21",
-      status: "Completed",
-      level: "Genius Level 2",
-      note: "",
-      _raw: "",
+      bookingId: uid(), createdAt: "2025-02-11", email: "demo2@mail.com", bookingNo: "BK1002", pin: "2211",
+      hotelId: "74", hotelNameSnapshot: "The Bower Coronado", cost: 540, checkIn: "2025-02-14", checkOut: "2025-02-16",
+      promoCode: "", rewardAmount: 60, rewardType: "Copa", rewardPaidOn: "2025-04-21", status: "Completed", level: "Genius Level 2", note: "", _raw: "",
     },
     {
-      bookingId: uid(),
-      createdAt: "2025-02-12",
-      email: "demo5@mail.com",
-      bookingNo: "BK1003",
-      pin: "3344",
-      hotelId: "74",
-      hotelNameSnapshot: "The Bower Coronado",
-      cost: 280,
-      checkIn: "2025-02-18",
-      checkOut: "2025-02-19",
-      promoCode: "",
-      rewardAmount: 0,
-      rewardType: "Booking",
-      rewardPaidOn: "",
-      status: "Cancelled",
-      level: "Genius Level 1",
-      note: "",
-      _raw: "",
+      bookingId: uid(), createdAt: "2025-02-12", email: "demo5@mail.com", bookingNo: "BK1003", pin: "3344",
+      hotelId: "74", hotelNameSnapshot: "The Bower Coronado", cost: 280, checkIn: "2025-02-18", checkOut: "2025-02-19",
+      promoCode: "", rewardAmount: 0, rewardType: "Booking", rewardPaidOn: "", status: "Cancelled", level: "Genius Level 1", note: "", _raw: "",
     },
   ],
   sales: [
@@ -582,12 +486,13 @@ const SEED: any = {
     { id: uid(), date: "2025-02-15", email: "demo2@mail.com", amount: 25, note: "Support" },
     { id: uid(), date: "2025-02-20", email: "demo7@mail.com", amount: 10, note: "SIM" },
   ],
+  specialRewards: [],
   audit: [],
   lastImport: null,
   lastRawImport: null,
 };
 
-// ----------------------- derive model -----------------------
+// ----------------------- DERIVE MODEL -----------------------
 function deriveModel(state: any) {
   const { database, hotels, bookings, sales, settings } = state;
 
@@ -598,11 +503,7 @@ function deriveModel(state: any) {
     bookingsByEmail.get(key)!.push(b);
   }
   for (const [, list] of bookingsByEmail.entries()) {
-    list.sort(
-      (x, y) =>
-        (parseDate(y.createdAt)?.getTime() || 0) -
-        (parseDate(x.createdAt)?.getTime() || 0)
-    );
+    list.sort((x, y) => (parseDate(y.createdAt)?.getTime() || 0) - (parseDate(x.createdAt)?.getTime() || 0));
   }
 
   const salesByEmail = new Map<string, any[]>();
@@ -612,42 +513,46 @@ function deriveModel(state: any) {
     salesByEmail.get(key)!.push(s);
   }
 
-  // Hotel stats
-  const hotelStats = new Map<string, { total: number; confirmed: number; cancelled: number; completed: number; spent: number }>();
+  const hotelStats = new Map<string, { total: number; confirmed: number; cancelled: number; spent: number; completed: number; lastBookingAt: string }>();
   for (const b of bookings) {
     const id = b.hotelId || "";
     if (!id) continue;
-    if (!hotelStats.has(id)) hotelStats.set(id, { total: 0, confirmed: 0, cancelled: 0, completed: 0, spent: 0 });
+    if (!hotelStats.has(id)) hotelStats.set(id, { total: 0, confirmed: 0, cancelled: 0, spent: 0, completed: 0, lastBookingAt: "" });
     const st = hotelStats.get(id)!;
     st.total += 1;
     if (b.status === "Confirmed") st.confirmed += 1;
     if (b.status === "Cancelled") st.cancelled += 1;
     if (b.status === "Completed") st.completed += 1;
     st.spent += Number(b.cost || 0);
+    if (!st.lastBookingAt || (parseDate(b.createdAt)?.getTime() || 0) > (parseDate(st.lastBookingAt)?.getTime() || 0)) {
+      st.lastBookingAt = b.createdAt;
+    }
   }
 
   const derivedHotels = hotels.map((h: any) => {
-    const st = hotelStats.get(h.hotelId) || { total: 0, confirmed: 0, cancelled: 0, completed: 0, spent: 0 };
+    const st = hotelStats.get(h.hotelId) || { total: 0, confirmed: 0, cancelled: 0, spent: 0, completed: 0, lastBookingAt: "" };
     const techBlocked = st.cancelled >= settings.hotelTechBlockTotal;
     const manualBlocked = h.manualStatus === "BLOCK";
     const isBlocked = manualBlocked || techBlocked;
+    const reliability = st.total > 0 ? (1 - st.cancelled / st.total) * 100 : 100;
+    // Rank Score: (Reliability * 2) + (Total Bookings * 0.5)
+    const rankScore = (reliability * 2) + (st.total * 0.5);
     return {
       ...h,
       totalBookings: st.total,
       confirmed: st.confirmed,
-      cancelled: st.cancelled,
       completed: st.completed,
+      cancelled: st.cancelled,
       spent: st.spent,
+      lastBookingAt: st.lastBookingAt,
+      reliability,
+      rankScore,
       techBlocked,
       manualBlocked,
       isBlocked,
-      blockReason: manualBlocked
-        ? "MANUAL"
-        : techBlocked
-        ? `TECH: hotel cancelled>=${settings.hotelTechBlockTotal}`
-        : "",
+      blockReason: manualBlocked ? "MANUAL" : techBlocked ? `TECH: hotel cancelled>=${settings.hotelTechBlockTotal}` : "",
     };
-  });
+  }).sort((a: any, b: any) => b.rankScore - a.rankScore);
 
   const derivedAccounts = database.map((row: any) => {
     const emailKey = safeLower(row.email);
@@ -660,10 +565,7 @@ function deriveModel(state: any) {
     const positiveBookings = accBookings.filter((b) => b.status !== "Cancelled").length;
 
     const bonusEvents = accBookings.filter(
-      (b) =>
-        ((b.status === "Completed" && Number(b.rewardAmount || 0) > 0) ||
-          (b.rewardPaidOn && Number(b.rewardAmount || 0) > 0)) &&
-        !b._void
+      (b) => ((b.status === "Completed" && Number(b.rewardAmount || 0) > 0) || (b.rewardPaidOn && Number(b.rewardAmount || 0) > 0)) && !b._void
     );
 
     const totalBonuses = bonusEvents.reduce((sum, b) => sum + Number(b.rewardAmount || 0), 0);
@@ -672,13 +574,8 @@ function deriveModel(state: any) {
 
     const lastBookingAt = accBookings[0]?.createdAt || "";
     const daysSinceLastBooking = lastBookingAt ? daysDiff(lastBookingAt) : null;
-    const cooldownOk = lastBookingAt
-      ? daysSinceLastBooking !== null && daysSinceLastBooking >= settings.cooldownDays
-      : true;
-
-    const activeBookingsCount = accBookings.filter(
-      (b) => b.status === "Pending" || b.status === "Confirmed"
-    ).length;
+    const cooldownOk = lastBookingAt ? daysSinceLastBooking !== null && daysSinceLastBooking >= settings.cooldownDays : true;
+    const activeBookingsCount = accBookings.filter((b) => b.status === "Pending" || b.status === "Confirmed").length;
 
     const totalCancelled = cancelledBookings;
     let consecutiveCancelled = 0;
@@ -687,10 +584,7 @@ function deriveModel(state: any) {
       else break;
     }
 
-    const techBlocked =
-      totalCancelled >= settings.techBlockTotal ||
-      consecutiveCancelled >= settings.techBlockConsecutive;
-
+    const techBlocked = totalCancelled >= settings.techBlockTotal || consecutiveCancelled >= settings.techBlockConsecutive;
     const manualBlocked = row.manualStatus === "Блок";
     const isBlocked = manualBlocked || techBlocked;
 
@@ -706,19 +600,11 @@ function deriveModel(state: any) {
     let tier = "Standard";
     if (netBalance >= settings.goldThreshold && !isBlocked) {
       tier = "Gold";
-      if (daysSinceLastBonus !== null && daysSinceLastBonus > settings.platinumAfterDays)
-        tier = "Platinum";
+      if (daysSinceLastBonus !== null && daysSinceLastBonus > settings.platinumAfterDays) tier = "Platinum";
     }
 
-    const canAddBooking =
-      !isBlocked && activeBookingsCount < settings.maxActiveBookings && cooldownOk;
-
-    const blockReason = manualBlocked
-      ? "MANUAL"
-      : techBlocked
-      ? `TECH: cancelled (total=${totalCancelled}, streak=${consecutiveCancelled})`
-      : "";
-
+    const canAddBooking = !isBlocked && activeBookingsCount < settings.maxActiveBookings && cooldownOk;
+    const blockReason = manualBlocked ? "MANUAL" : techBlocked ? `TECH: cancelled (total=${totalCancelled}, streak=${consecutiveCancelled})` : "";
     const progressToGold = Math.max(0, Math.min(1, netBalance / settings.goldThreshold));
 
     return {
@@ -758,166 +644,71 @@ function deriveModel(state: any) {
     .sort((a: any, b: any) => (b.confirmed || 0) - (a.confirmed || 0));
 
   const premium = derivedAccounts.filter((a: any) => a.tier === "Gold" || a.tier === "Platinum");
-
-  const topHotels = [...derivedHotels]
-    .sort((a: any, b: any) => b.totalBookings - a.totalBookings)
-    .slice(0, 10);
-
-  const topAccounts = [...derivedAccounts]
-    .sort((a: any, b: any) => b.totalBookings - a.totalBookings)
-    .slice(0, 10);
+  const topHotels = [...derivedHotels].sort((a: any, b: any) => b.totalBookings - a.totalBookings).slice(0, 10);
+  const topAccounts = [...derivedAccounts].sort((a: any, b: any) => b.totalBookings - a.totalBookings).slice(0, 10);
 
   const statusCounts: any = { Pending: 0, Confirmed: 0, Completed: 0, Cancelled: 0 };
   for (const b of bookings) statusCounts[b.status] = (statusCounts[b.status] || 0) + 1;
 
-  return {
-    derivedAccounts,
-    derivedHotels,
-    accountsReady,
-    hotelsEligible,
-    premium,
-    topHotels,
-    topAccounts,
-    statusCounts,
-  };
+  const totalSpent = sales.reduce((sum, s) => sum + Number(s.amount || 0), 0);
+  const totalEarned = derivedAccounts.reduce((sum, a) => sum + Number(a.totalBonuses || 0), 0);
+  const totalLeft = totalEarned - totalSpent;
+
+  return { derivedAccounts, derivedHotels, accountsReady, hotelsEligible, premium, topHotels, topAccounts, statusCounts, totalSpent, totalEarned, totalLeft };
 }
 
-// ----------------------- self-tests (no deps) -----------------------
-function runSelfTestsOnce() {
-  try {
-    const w: any = typeof window !== "undefined" ? window : null;
-    if (!w) return;
-    if (w.__OPS_DASH_TESTS_RAN__) return;
-    w.__OPS_DASH_TESTS_RAN__ = true;
+// ----------------------- UI COMPONENTS (AUDI STYLE) -----------------------
+const Badge = ({ kind, children }: any) => {
+  let style = "bg-zinc-800 text-zinc-400 border-zinc-700";
+  if (kind === "active" || kind === "ok") style = "bg-green-900/30 text-green-400 border-green-800/50";
+  else if (kind === "block" || kind === "cancelled") style = "bg-[#CC0000]/20 text-red-400 border-[#CC0000]/40";
+  else if (kind === "tech" || kind === "warn") style = "bg-yellow-900/20 text-yellow-500 border-yellow-700/40";
+  else if (kind === "gold") style = "bg-yellow-500/10 text-yellow-300 border-yellow-500/30";
+  else if (kind === "plat") style = "bg-blue-300/10 text-blue-200 border-blue-300/30";
 
-    const line =
-      "2025-12-15\ta@b.com\t5051780387\t6635\t\tHyatt Regency JFK Airport\t6,066.89\t2026-03-12\t2026-03-13\t120.00\tconfirmed\tGenius Level 1";
-    const b: any = parseBookingLine(line);
-    console.assert(!!b, "parseBookingLine should parse a valid line");
-    console.assert(b.email === "a@b.com", "email should be normalized to lower");
-    console.assert(b.status === "Confirmed", "status should be normalized");
-    console.assert(b.rewardAmount === 120, "rewardAmount should parse numeric");
-    console.assert(b.cost === 6066.89, "cost should parse with commas");
-    console.assert(b.level === "Genius Level 1", "level should be preserved");
-    console.assert(b.rewardType === "Booking", "default type should be Booking");
-
-    const line2 =
-      "2025-12-15\ta@b.com\t999\t0000\t74\tHotel\t100\t2026-03-12\t2026-03-13\t80\tcancelled\tGenius Level 2\tCopa\t2026-05-20";
-    const b2: any = parseBookingLine(line2, DEFAULT_REWARD_TYPES);
-    console.assert(b2.rewardType === "Copa", "type should parse from tail");
-    console.assert(b2.rewardPaidOn === "2026-05-20", "rewardPaidOn should parse ISO date");
-    console.assert(b2.level === "Genius Level 2", "level should not get polluted by date/type");
-
-    const line3 =
-      "2025-12-15\ta@b.com\t777\t0000\t74\tHotel\t100\t2026-03-12\t2026-03-13\t80\tconfirmed\tGenius Level 3\tAA\tAmerican Airlines";
-    const b3: any = parseBookingLine(line3, DEFAULT_REWARD_TYPES);
-    console.assert(b3.airline === "American Airlines", "airline should parse from tail");
-
-    console.assert(
-      computeRewardETA({ checkOut: "2026-01-01", rewardType: "Booking" }, { rewardDaysBooking: 14, rewardDaysOther: 64 }) === "2026-01-15",
-      "ETA should be checkout+14 for Booking"
-    );
-    console.assert(
-      computeRewardETA({ checkOut: "2026-01-01", rewardType: "AA" }, { rewardDaysBooking: 14, rewardDaysOther: 64 }) === "2026-03-06",
-      "ETA should be checkout+64 for non-Booking"
-    );
-
-    const bad = parseBookingLine("not\ta\tvalid");
-    console.assert(bad === null, "invalid line should return null");
-
-    const paste = `${line}\n${line}`;
-    const p = parsePaste(paste, DEFAULT_REWARD_TYPES);
-    console.assert(p.parsed.length === 2, "parsePaste should parse 2 lines");
-
-    const tsv = accountsToTSV([
-      { email: "x@y.com", password: "p1" },
-      { email: "z@y.com", password: "" },
-    ]);
-    console.assert(
-      tsv === "x@y.com\tp1\nz@y.com\t",
-      "accountsToTSV should join with \\n and include tab"
-    );
-
-    const ar = parseAccountsPaste("user@x.com\tpass\nbadline\nu2@x.com\t");
-    console.assert(ar.rows.length === 2 && ar.errors.length === 1, "parseAccountsPaste should parse rows + errors");
-  } catch {
-    // no-throw by design
-  }
-}
-
-if (typeof window !== "undefined") {
-  setTimeout(runSelfTestsOnce, 0);
-}
-
-// ----------------------- UI bits -----------------------
-const Badge = ({ kind, children, themeMode }: any) => {
-  const map: any = {
-    active: themeMode === "dark" ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20" : "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
-    block: themeMode === "dark" ? "bg-rose-500/10 text-rose-300 border-rose-500/20" : "bg-rose-500/10 text-rose-500 border-rose-500/20",
-    tech: themeMode === "dark" ? "bg-amber-500/10 text-amber-300 border-amber-500/20" : "bg-amber-500/10 text-amber-500 border-amber-500/20",
-    gold: themeMode === "dark" ? "bg-yellow-500/10 text-yellow-300 border-yellow-500/20" : "bg-yellow-500/10 text-yellow-500 border-yellow-500/20",
-    plat: themeMode === "dark" ? "bg-blue-400/10 text-blue-200 border-blue-400/20" : "bg-blue-400/10 text-blue-500 border-blue-400/20",
-    dim: themeMode === "dark" ? "bg-slate-500/10 text-slate-400 border-slate-500/20" : "bg-slate-500/10 text-slate-500 border-slate-500/20",
-  };
-  return (
-    <span
-      className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold border ${
-        map[kind] || map.dim
-      }`}
-    >
-      {children}
-    </span>
-  );
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-sm text-[10px] uppercase tracking-wider font-bold border ${style}`}>{children}</span>;
 };
 
-const StatCard = ({ title, value, subValue, icon: Icon, onClick, theme }: any) => (
+const StatCard = ({ title, value, subValue, icon: Icon, onClick, isActive, color }: any) => (
   <div
     onClick={onClick}
-    className={`relative overflow-hidden p-6 rounded-2xl border transition-all cursor-pointer ${
-      theme === "dark"
-        ? "border-slate-800 bg-gradient-to-br from-[#111827] via-[#0B1220] to-[#0B0E14] shadow-[0_10px_30px_rgba(15,23,42,0.6)] hover:border-blue-500/60"
-        : "border-slate-200 bg-white shadow-sm hover:border-slate-300"
+    className={`relative overflow-hidden p-5 rounded-sm border transition-all cursor-pointer group bg-[#111111] hover:bg-[#161616] ${
+      isActive ? `border-[${color || AUDI_COLORS.brightRed}] shadow-[0_0_15px_rgba(244,0,9,0.15)]` : "border-[#333333] hover:border-zinc-500"
     }`}
   >
-    <div className={`absolute top-0 right-0 p-4 opacity-20 ${theme === "dark" ? "text-blue-400" : "text-slate-400"}`}>
-      <Icon size={64} />
+    <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity text-white">
+      <Icon size={80} strokeWidth={1} />
     </div>
-    <div className="flex items-center gap-3 mb-2">
-      <div
-        className={`p-2 rounded-lg border ${
-          theme === "dark"
-            ? "bg-blue-500/10 border-blue-500/20 text-blue-300"
-            : "bg-slate-100 border-slate-200 text-slate-600"
-        }`}
-      >
-        <Icon size={18} />
+    <div className="flex items-center gap-3 mb-3">
+      <div className={`p-1.5 rounded-sm bg-zinc-900 border border-zinc-800 ${color ? `text-[${color}]` : "text-[#F40009]"}`}>
+        <Icon size={16} />
       </div>
-      <span className={`text-sm font-medium ${theme === "dark" ? "text-slate-400" : "text-slate-500"}`}>{title}</span>
+      <span className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">{title}</span>
     </div>
-    <div className="flex items-end gap-3">
-      <h3 className={`text-2xl font-bold tracking-tight ${theme === "dark" ? "text-white" : "text-slate-900"}`}>{value}</h3>
-      {subValue && <span className={`text-xs mb-1 ${theme === "dark" ? "text-slate-500" : "text-slate-500"}`}>{subValue}</span>}
+    <div className="flex items-end gap-3 relative z-10">
+      <h3 className="text-3xl font-bold tracking-tight text-white font-[system-ui]">{value}</h3>
+      {subValue && <span className="text-[10px] mb-1.5 text-zinc-500 font-mono">{subValue}</span>}
     </div>
+    {isActive && <div className={`absolute bottom-0 left-0 w-full h-0.5 ${color ? `bg-[${color}]` : "bg-[#F40009]"}`} />}
   </div>
 );
 
-function Modal({ open, title, onClose, children, themeMode }: any) {
+function Modal({ open, title, onClose, children }: any) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div
-        className={`absolute left-1/2 top-1/2 w-[min(980px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border shadow-2xl ${
-          themeMode === "dark" ? "border-slate-800 bg-[#0F172A]" : "border-slate-200 bg-white"
-        }`}
-      >
-        <div className={`flex items-center justify-between px-5 py-4 border-b ${themeMode === "dark" ? "border-slate-800" : "border-slate-200"}`}>
-          <div className={`${themeMode === "dark" ? "text-slate-100" : "text-slate-900"} font-bold`}>{title}</div>
-          <button onClick={onClose} className={`p-2 rounded-lg ${themeMode === "dark" ? "hover:bg-slate-800" : "hover:bg-slate-100"}`}>
-            <X size={18} className={`${themeMode === "dark" ? "text-slate-400" : "text-slate-500"}`} />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-6xl rounded-sm border border-[#333333] bg-[#0A0A0A] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#222]">
+          <div className="text-white font-bold uppercase tracking-wider text-sm flex items-center gap-2">
+              <div className="w-1 h-4 bg-[#F40009]"/>
+              {title}
+          </div>
+          <button onClick={onClose} className="p-2 rounded-sm hover:bg-[#222] text-zinc-400 hover:text-white transition-colors">
+            <X size={18} />
           </button>
         </div>
-        <div className={`p-5 ${themeMode === "dark" ? "text-slate-200" : "text-slate-700"}`}>{children}</div>
+        <div className="p-6 text-zinc-300 max-h-[85vh] overflow-y-auto custom-scrollbar">{children}</div>
       </div>
     </div>
   );
@@ -925,103 +716,110 @@ function Modal({ open, title, onClose, children, themeMode }: any) {
 
 function Toasts({ toasts, onDismiss }: any) {
   return (
-    <div className="fixed right-6 bottom-6 z-50 space-y-2">
+    <div className="fixed right-6 bottom-6 z-50 space-y-2 pointer-events-none">
       {toasts.map((t: any) => (
         <div
           key={t.id}
-          className={`px-4 py-3 rounded-xl border shadow-lg backdrop-blur bg-slate-50/70 ${
-            t.kind === "ok"
-              ? "border-emerald-500/30"
-              : t.kind === "warn"
-              ? "border-amber-500/30"
-              : "border-rose-500/30"
+          className={`pointer-events-auto w-80 p-4 rounded-sm bg-[#111111] border shadow-2xl backdrop-blur-md flex items-start gap-4 animate-in slide-in-from-right-10 duration-300 ${
+            t.kind === "ok" ? "border-green-900/50" : t.kind === "warn" ? "border-yellow-900/50" : "border-red-900/50"
           }`}
         >
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5">
-              {t.kind === "ok" ? (
-                <CheckCircle2 size={16} className="text-emerald-400" />
-              ) : t.kind === "warn" ? (
-                <AlertTriangle size={16} className="text-amber-400" />
-              ) : (
-                <ShieldAlert size={16} className="text-rose-400" />
-              )}
-            </div>
-            <div className="flex-1">
-              <div className="text-sm font-bold text-slate-900">{t.title}</div>
-              {t.msg && <div className="text-xs text-slate-500 mt-1">{t.msg}</div>}
-            </div>
-            <button
-              onClick={() => onDismiss(t.id)}
-              className="text-slate-500 hover:text-slate-900 text-xs"
-            >
-              ✕
-            </button>
+          <div className="mt-0.5 shrink-0">
+            {t.kind === "ok" ? <CheckCircle2 size={18} className="text-green-500" /> : t.kind === "warn" ? <AlertTriangle size={18} className="text-yellow-500" /> : <ShieldAlert size={18} className="text-[#F40009]" />}
           </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-bold text-white leading-tight">{t.title}</div>
+            {t.msg && <div className="text-xs text-zinc-500 mt-1 leading-relaxed">{t.msg}</div>}
+          </div>
+          <button onClick={() => onDismiss(t.id)} className="text-zinc-600 hover:text-zinc-300">
+            <X size={14} />
+          </button>
         </div>
       ))}
     </div>
   );
 }
 
-// ----------------------- App -----------------------
+const PanelHeader = ({ icon: Icon, title, subtitle, actions }: any) => (
+  <div className="flex items-start justify-between gap-4 mb-4">
+    <div className="flex items-center gap-3">
+      <div className="p-2 bg-[#1C1C1C] border border-[#2B2B2B] rounded-sm text-[#F40009]">
+        <Icon size={18} />
+      </div>
+      <div>
+        <h3 className="text-white font-bold uppercase tracking-wider text-sm">{title}</h3>
+        {subtitle && <p className="text-xs text-zinc-500">{subtitle}</p>}
+      </div>
+    </div>
+    {actions && <div className="flex items-center gap-2">{actions}</div>}
+  </div>
+);
+
+const DataPill = ({ label, value, color }: any) => (
+  <div className="px-3 py-1 rounded-sm text-[10px] uppercase tracking-widest border" style={{ borderColor: color || "#333", color: color || "#999" }}>
+    {label}: <span className="text-white font-bold ml-1">{value}</span>
+  </div>
+);
+
+// ----------------------- MAIN APP -----------------------
 export default function App() {
   const [activeTab, setActiveTab] = useState("overview");
   const [searchTerm, setSearchTerm] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [auditOpen, setAuditOpen] = useState(false);
+  const [globalActionsOpen, setGlobalActionsOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importError, setImportError] = useState("");
   const [importPayload, setImportPayload] = useState("");
-  const [themeMode, setThemeMode] = useState<"dark" | "light">("dark");
   const [trendDays, setTrendDays] = useState(30);
-  const [chainModalOpen, setChainModalOpen] = useState(false);
-  const [chainModalName, setChainModalName] = useState("");
-  const [bestHotelMode, setBestHotelMode] = useState<"cancellations" | "spend">("cancellations");
-  const [rewardModalEmail, setRewardModalEmail] = useState<string | null>(null);
+  const [editMode, setEditMode] = useState(false); // Global Table Edit Mode
+  const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [rewardDetailOpen, setRewardDetailOpen] = useState(false);
+  const [rewardDetailAccount, setRewardDetailAccount] = useState<string>("");
+  const [rewardPasswordVisible, setRewardPasswordVisible] = useState<Record<string, boolean>>({});
+  const [selectedNextAction, setSelectedNextAction] = useState<Set<string>>(new Set());
+  const [tableFilters, setTableFilters] = useState<Record<string, string>>({
+    database: "",
+    bookings: "",
+    hotels: "",
+    hotelIntel: "",
+    spent: "",
+    rewardsPaid: "",
+    rewardsPending: "",
+    sheet: "",
+  });
+  const [tableSorts, setTableSorts] = useState<Record<string, { key: string; dir: "asc" | "desc" }>>({
+    database: { key: "email", dir: "asc" },
+    bookings: { key: "createdAt", dir: "desc" },
+    hotels: { key: "rankScore", dir: "desc" },
+    hotelIntel: { key: "rankScore", dir: "desc" },
+    spent: { key: "date", dir: "desc" },
+    rewardsPaid: { key: "paidTotal", dir: "desc" },
+    rewardsPending: { key: "eta", dir: "asc" },
+    sheet: { key: "email", dir: "asc" },
+  });
 
-  // Next Action UX: table mode + multi-select copy
-  const [nextActionMode, setNextActionMode] = useState<"table" | "list">("table");
-  const [readySelected, setReadySelected] = useState<Record<string, boolean>>(() => ({}));
-  const clearReadySelected = () => setReadySelected({});
-  const [readyBalanceMin, setReadyBalanceMin] = useState("");
-  const [readySortKey, setReadySortKey] = useState<"balance" | "active" | "stat">("balance");
-  const [readySortDir, setReadySortDir] = useState<"asc" | "desc">("desc");
-  const [readyStatFilter, setReadyStatFilter] = useState<"ALL" | "NO_CANCEL" | "HAS_CANCEL">("ALL");
-  const [eligibleConfirmedMin, setEligibleConfirmedMin] = useState("");
-  const [eligibleCompletedMin, setEligibleCompletedMin] = useState("");
-  const [eligibleCancelledMax, setEligibleCancelledMax] = useState("");
+  // Command Center Selection
+  const [selectedReady, setSelectedReady] = useState<Set<string>>(new Set());
 
-  // RawData: show only emails without passwords
-  const [rawOnlyMissing, setRawOnlyMissing] = useState(false);
-
-  // Bookings filters
-  const [bookingStatusFilter, setBookingStatusFilter] = useState<string>("ALL");
-  const [bookingTypeFilter, setBookingTypeFilter] = useState<string>("ALL");
-  const [bookingMissingPaidFilter, setBookingMissingPaidFilter] = useState(false);
-  const [bookingMissingPasswordFilter, setBookingMissingPasswordFilter] = useState(false);
-  const [bookingEditMode, setBookingEditMode] = useState(false);
-  const [bookingDupOpen, setBookingDupOpen] = useState(false);
-  const [bookingDupRows, setBookingDupRows] = useState<any[]>([]);
-  const [bookingSortKey, setBookingSortKey] = useState("createdAt");
-  const [bookingSortDir, setBookingSortDir] = useState<"asc" | "desc">("desc");
-
-  // Database filter
-  const [dbOnlyMissing, setDbOnlyMissing] = useState(false);
-  const [hotelConfirmedMin, setHotelConfirmedMin] = useState("");
-  const [hotelCancelledMax, setHotelCancelledMax] = useState("");
-  const [hotelTopRatedOnly, setHotelTopRatedOnly] = useState(false);
+  // RawData states
+  const [rawAccountsInput, setRawAccountsInput] = useState("");
+  const [rawSpentInput, setRawSpentInput] = useState("");
+  const [rawBlockedInput, setRawBlockedInput] = useState("");
+  const [rawPromoEmail, setRawPromoEmail] = useState("");
+  const [rawPromoAmount, setRawPromoAmount] = useState("");
+  const [rawPromoCode, setRawPromoCode] = useState("");
 
   const [toasts, setToasts] = useState<any[]>([]);
   const pushToast = (kind: "ok" | "warn" | "err", title: string, msg = "") => {
     const id = uid();
     setToasts((p) => [...p, { id, kind, title, msg }]);
-    setTimeout(() => setToasts((p) => p.filter((x) => x.id !== id)), 3200);
+    setTimeout(() => setToasts((p) => p.filter((x) => x.id !== id)), 4000);
   };
 
   const [state, setState] = useState<any>(() => {
     try {
-      const raw = localStorage.getItem("ops_dash_v4_state");
+      const raw = localStorage.getItem("ops_dash_audi_state");
       if (raw) return JSON.parse(raw);
     } catch {}
     return SEED;
@@ -1029,16 +827,15 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("ops_dash_v4_state", JSON.stringify(state));
+      localStorage.setItem("ops_dash_audi_state", JSON.stringify(state));
     } catch {}
   }, [state]);
 
   const model = useMemo(() => deriveModel(state), [state]);
 
-  // Auto-write TECH blocks back into manual status
+  // Auto-write TECH blocks (FULL LOGIC RESTORED)
   useEffect(() => {
     if (!state.settings.autoWriteTechBlocks) return;
-
     const techAcc = model.derivedAccounts.filter((a: any) => a.techBlocked && a.manualStatus !== "Блок");
     const techHotels = model.derivedHotels.filter((h: any) => h.techBlocked && h.manualStatus !== "BLOCK");
 
@@ -1046,7 +843,6 @@ export default function App() {
 
     setState((prev: any) => {
       const next = { ...prev, database: [...prev.database], hotels: [...prev.hotels], audit: [...(prev.audit || [])] };
-
       const now = new Date().toISOString();
       for (const a of techAcc) {
         const idx = next.database.findIndex((x: any) => safeLower(x.email) === a.emailKey);
@@ -1070,7 +866,6 @@ export default function App() {
           next.audit.push({ id: uid(), at: now, type: "AUTO_BLOCK_HOTEL", msg: `TECH block → manual BLOCK: ${h.hotelId} ${h.name}` });
         }
       }
-
       next.audit = next.audit.slice(-400);
       return next;
     });
@@ -1085,367 +880,47 @@ export default function App() {
     return { totalNet, totalBookings, status, blocked, missingPasswords };
   }, [model, state.bookings.length]);
 
-  const theme = useMemo(
-    () =>
-      themeMode === "dark"
-        ? {
-            bg: "bg-[#0B0E14] text-slate-200",
-            panel: "bg-[#121826] border border-slate-800 shadow-[0_8px_30px_rgba(15,23,42,0.45)]",
-            panelMuted: "bg-[#0F172A] border border-slate-800",
-            header: "bg-[#0B0E14]/90 border-slate-800",
-            sidebar: "bg-[#0F172A] border-slate-800",
-            input: "bg-[#0B1220] border-slate-700 text-slate-200",
-            button: "bg-[#0F172A] border-slate-700 text-slate-200 hover:bg-slate-800",
-            text: "text-slate-200",
-            textDim: "text-slate-400",
-            tableHead: "bg-[#0B1220] text-slate-400",
-            rowHover: "hover:bg-slate-800/40",
-            tooltip: { backgroundColor: "#0B1220", borderColor: "#1E293B", color: "#E2E8F0" },
-            grid: "#1E293B",
-            axis: "#94A3B8",
-          }
-        : {
-            bg: "bg-[#F6F7FB] text-slate-900",
-            panel: "bg-white border border-slate-200 shadow-sm",
-            panelMuted: "bg-slate-50 border border-slate-200",
-            header: "bg-white/80 border-slate-200",
-            sidebar: "bg-white border-slate-200",
-            input: "bg-white border-slate-200 text-slate-700",
-            button: "bg-white border-slate-200 text-slate-700 hover:bg-slate-50",
-            text: "text-slate-900",
-            textDim: "text-slate-500",
-            tableHead: "bg-white text-slate-500",
-            rowHover: "hover:bg-slate-50",
-            tooltip: { backgroundColor: "#FFFFFF", borderColor: "#E2E8F0", color: "#334155" },
-            grid: "#E2E8F0",
-            axis: "#94A3B8",
-          },
-    [themeMode]
-  );
-
   const netTrend = useMemo(() => {
     const days = trendDays;
     const end = parseDate(todayISO())!;
-    const map = new Map<string, { date: string; net: number }>();
+    const map = new Map<string, { date: string; net: number; earned: number; spent: number }>();
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date(end.getTime() - i * 24 * 3600 * 1000);
       const key = d.toISOString().slice(0, 10);
-      map.set(key, { date: key, net: 0 });
+      map.set(key, { date: key, net: 0, earned: 0, spent: 0 });
     }
     for (const b of state.bookings) {
       const key = (b.rewardPaidOn || b.createdAt || "").slice(0, 10);
       if (map.has(key) && (b.status === "Completed" || b.rewardPaidOn) && Number(b.rewardAmount || 0) > 0) {
         map.get(key)!.net += Number(b.rewardAmount || 0);
+        map.get(key)!.earned += Number(b.rewardAmount || 0);
       }
     }
     for (const s of state.sales) {
       const key = (s.date || "").slice(0, 10);
-      if (map.has(key)) map.get(key)!.net -= Number(s.amount || 0);
+      if (map.has(key)) {
+          map.get(key)!.net -= Number(s.amount || 0);
+          map.get(key)!.spent += Number(s.amount || 0);
+      }
     }
     return Array.from(map.values());
   }, [state.bookings, state.sales, trendDays]);
 
-  const accountsByDay = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const acc of state.database) {
-      const date = String(acc.createdAt || "").slice(0, 10) || todayISO();
-      map.set(date, (map.get(date) || 0) + 1);
-    }
-    return Array.from(map.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([date, count]) => ({ date, count }));
-  }, [state.database]);
-
-  const rewardTrend = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const b of state.bookings) {
-      if (!Number(b.rewardAmount || 0)) continue;
-      const date = String(b.rewardPaidOn || b.createdAt || "").slice(0, 10);
-      if (!date) continue;
-      map.set(date, (map.get(date) || 0) + Number(b.rewardAmount || 0));
-    }
-    return Array.from(map.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([date, total]) => ({ date, total }));
-  }, [state.bookings]);
-
-  const spentTrend = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const s of state.sales) {
-      const date = String(s.date || "").slice(0, 10);
-      if (!date) continue;
-      map.set(date, (map.get(date) || 0) + Number(s.amount || 0));
-    }
-    return Array.from(map.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([date, total]) => ({ date, total }));
-  }, [state.sales]);
-
-  const chainStats = useMemo(() => {
-    const map = new Map<string, { total: number; cancelled: number }>();
-    for (const b of state.bookings) {
-      const chain = normalizeChainName(b.hotelNameSnapshot || b.hotelId || "");
-      if (!map.has(chain)) map.set(chain, { total: 0, cancelled: 0 });
-      const st = map.get(chain)!;
-      st.total += 1;
-      if (b.status === "Cancelled") st.cancelled += 1;
-    }
-    return Array.from(map.entries())
-      .map(([chain, st]) => ({
-        chain,
-        cancelled: st.cancelled,
-        other: st.total - st.cancelled,
-        total: st.total,
-      }))
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 12);
-  }, [state.bookings]);
-
-  const chainReliability = useMemo(() => {
-    return chainStats.map((c) => ({
-      ...c,
-      cancelRate: c.total ? Math.round((c.cancelled / c.total) * 100) : 0,
-    }));
-  }, [chainStats]);
-
-  const chainHotels = useMemo(() => {
-    const map = new Map<string, Map<string, { name: string; total: number; cancelled: number }>>();
-    for (const b of state.bookings) {
-      const chain = normalizeChainName(b.hotelNameSnapshot || b.hotelId || "");
-      if (!map.has(chain)) map.set(chain, new Map());
-      const hotelKey = b.hotelId || b.hotelNameSnapshot || "Unknown";
-      const hmap = map.get(chain)!;
-      if (!hmap.has(hotelKey)) hmap.set(hotelKey, { name: b.hotelNameSnapshot || b.hotelId || "Unknown", total: 0, cancelled: 0 });
-      const st = hmap.get(hotelKey)!;
-      st.total += 1;
-      if (b.status === "Cancelled") st.cancelled += 1;
-    }
-    const out: Record<string, any[]> = {};
-    for (const [chain, hmap] of map.entries()) {
-      out[chain] = Array.from(hmap.values())
-        .map((h) => ({ ...h, cancelRate: h.total ? Math.round((h.cancelled / h.total) * 100) : 0 }))
-        .sort((a, b) => a.cancelRate - b.cancelRate || b.total - a.total);
-    }
-    return out;
-  }, [state.bookings]);
-
-  const leadTimeStats = useMemo(() => {
-    const buckets = new Map<string, { total: number; cancelled: number }>();
-    for (const b of state.bookings) {
-      const lead = daysDiff(b.createdAt, b.checkIn);
-      const bucket = leadTimeBucket(lead);
-      if (!buckets.has(bucket)) buckets.set(bucket, { total: 0, cancelled: 0 });
-      const st = buckets.get(bucket)!;
-      st.total += 1;
-      if (b.status === "Cancelled") st.cancelled += 1;
-    }
-    return Array.from(buckets.entries()).map(([bucket, st]) => ({
-      bucket,
-      total: st.total,
-      cancelled: st.cancelled,
-      cancelRate: st.total ? Math.round((st.cancelled / st.total) * 100) : 0,
-    }));
-  }, [state.bookings]);
-
-  const promoStats = useMemo(() => {
-    const withPromo = { total: 0, cancelled: 0 };
-    const withoutPromo = { total: 0, cancelled: 0 };
-    for (const b of state.bookings) {
-      const hasPromo = String(b.promoCode || "").trim().length > 0;
-      const target = hasPromo ? withPromo : withoutPromo;
-      target.total += 1;
-      if (b.status === "Cancelled") target.cancelled += 1;
-    }
-    const withRate = withPromo.total ? Math.round((withPromo.cancelled / withPromo.total) * 100) : 0;
-    const withoutRate = withoutPromo.total ? Math.round((withoutPromo.cancelled / withoutPromo.total) * 100) : 0;
-    return { withPromo, withoutPromo, withRate, withoutRate };
-  }, [state.bookings]);
-
-  const bestHotels = useMemo(() => {
-    const map = new Map<string, { hotelId: string; name: string; total: number; cancelled: number }>();
-    for (const b of state.bookings) {
-      const key = b.hotelId || b.hotelNameSnapshot || "Unknown";
-      if (!map.has(key))
-        map.set(key, {
-          hotelId: b.hotelId || "",
-          name: b.hotelNameSnapshot || b.hotelId || "Unknown",
-          total: 0,
-          cancelled: 0,
-        });
-      const st = map.get(key)!;
-      st.total += 1;
-      if (b.status === "Cancelled") st.cancelled += 1;
-    }
-    return Array.from(map.values())
-      .map((h) => ({
-        ...h,
-        cancelRate: h.total ? Math.round((h.cancelled / h.total) * 100) : 0,
-      }))
-      .filter((h) => h.total >= 2)
-      .sort((a, b) => a.cancelRate - b.cancelRate || b.total - a.total)
-      .slice(0, 8);
-  }, [state.bookings]);
-
-  const bestHotelsBySpend = useMemo(() => {
-    const map = new Map<string, { name: string; total: number; cancelled: number; spent: number }>();
-    for (const b of state.bookings) {
-      const key = b.hotelId || b.hotelNameSnapshot || "Unknown";
-      if (!map.has(key)) map.set(key, { name: b.hotelNameSnapshot || b.hotelId || "Unknown", total: 0, cancelled: 0, spent: 0 });
-      const st = map.get(key)!;
-      st.total += 1;
-      st.spent += Number(b.cost || 0);
-      if (b.status === "Cancelled") st.cancelled += 1;
-    }
-    return Array.from(map.values())
-      .map((h) => ({ ...h, cancelRate: h.total ? Math.round((h.cancelled / h.total) * 100) : 0 }))
-      .filter((h) => h.total >= 2)
-      .sort((a, b) => a.cancelRate - b.cancelRate || b.spent - a.spent)
-      .slice(0, 8);
-  }, [state.bookings]);
-
-  const riskyAccounts = useMemo(() => {
-    return model.derivedAccounts
-      .map((a: any) => {
-        const risk =
-          (a.cancelledBookings || 0) * 2 +
-          (a.consecutiveCancelled || 0) * 3 +
-          (!String(a.password || "").trim() ? 3 : 0) +
-          (!a.cooldownOk ? 2 : 0);
-        return { ...a, risk };
-      })
-      .sort((a: any, b: any) => b.risk - a.risk)
-      .slice(0, 8);
-  }, [model.derivedAccounts]);
-
-  const recommendedPairs = useMemo(() => {
-    const accounts = model.accountsReady.slice(0, 6);
-    const hotels = model.hotelsEligible.slice(0, 6);
-    const pairs: Array<{ email: string; hotel: string }> = [];
-    for (let i = 0; i < Math.max(accounts.length, hotels.length); i++) {
-      const acc = accounts[i % accounts.length];
-      const hot = hotels[i % hotels.length];
-      if (acc && hot) pairs.push({ email: acc.email, hotel: hot.name || hot.hotelId });
-    }
-    return pairs.slice(0, 6);
-  }, [model.accountsReady, model.hotelsEligible]);
-
-  const rewardSummary = useMemo(() => {
-    const today = todayISO();
-    const byEmail = new Map<string, any>();
-    for (const acc of state.database) {
-      const key = safeLower(acc.email);
-      byEmail.set(key, {
-        email: acc.email,
-        password: acc.password || "",
-        accumulated: 0,
-        potential: 0,
-        nextRewardAt: "",
-        lastRewardAt: "",
-        earnedCount: 0,
+  const rewardAccumulation = useMemo(() => {
+      let acc = 0;
+      return netTrend.map(d => {
+          acc += d.earned;
+          return { ...d, acc };
       });
-    }
-    for (const b of state.bookings) {
-      if (b.status === "Cancelled") continue;
-      if (!Number(b.rewardAmount || 0)) continue;
-      const key = safeLower(b.email);
-      if (!byEmail.has(key)) continue;
-      const eta = computeRewardETA(b, state.settings);
-      if (!eta) continue;
-      if (eta <= today) {
-        const row = byEmail.get(key);
-        row.accumulated += Number(b.rewardAmount || 0);
-        row.earnedCount += 1;
-        if (!row.lastRewardAt || eta > row.lastRewardAt) row.lastRewardAt = eta;
-      } else {
-        const row = byEmail.get(key);
-        row.potential += Number(b.rewardAmount || 0);
-        if (!row.nextRewardAt || eta < row.nextRewardAt) row.nextRewardAt = eta;
-      }
-    }
-    const salesByEmail = new Map<string, number>();
-    for (const s of state.sales) {
-      const key = safeLower(s.email);
-      salesByEmail.set(key, (salesByEmail.get(key) || 0) + Number(s.amount || 0));
-    }
-    return Array.from(byEmail.values()).map((row) => {
-      const spent = salesByEmail.get(safeLower(row.email)) || 0;
-      const daysSinceLast = row.lastRewardAt ? daysDiff(row.lastRewardAt) : null;
-      const daysUntilNext = row.nextRewardAt ? daysDiff(today, row.nextRewardAt) : null;
-      let medal = "—";
-      const totalEarned = row.accumulated;
-      if (totalEarned > 300 && row.potential === 0 && daysSinceLast !== null) {
-        if (daysSinceLast >= 40) medal = "Platinum";
-        else if (daysSinceLast >= 20) medal = "Gold";
-      } else if (totalEarned >= 200 && totalEarned <= 300 && daysSinceLast !== null) {
-        medal = daysSinceLast <= 20 ? "Bronze/Silver" : "Silver";
-      } else if (totalEarned >= 50 && totalEarned < 200) {
-        medal = "Bronze";
-      }
-      return {
-        ...row,
-        spent,
-        restAmount: totalEarned - spent,
-        daysSinceLast,
-        daysUntilNext,
-        medal,
-      };
-    });
-  }, [state.database, state.bookings, state.sales, state.settings]);
+  }, [netTrend]);
 
-  // --------- MUTATIONS ----------
   const setSettings = (patch: any) => setState((prev: any) => ({ ...prev, settings: { ...prev.settings, ...patch } }));
 
-  const handleExport = () => {
-    const payload = exportStateByEmail(state);
-    downloadJSON(`ops-dash-export-${todayISO()}.json`, payload);
-    pushToast("ok", "Exported", "JSON export generated.");
-  };
-
-  const handleImport = (payload: any) => {
-    if (!payload || !Array.isArray(payload.accounts)) {
-      throw new Error("Invalid import format: missing accounts.");
-    }
-    const nextState = {
-      ...state,
-      settings: payload.settings || state.settings,
-      hotels: Array.isArray(payload.hotels) ? payload.hotels : state.hotels,
-      database: payload.accounts.map((a: any) => {
-        const { bookings, sales, ...rest } = a || {};
-        return rest;
-      }),
-      bookings: payload.accounts.flatMap((a: any) => a.bookings || []),
-      sales: payload.accounts.flatMap((a: any) => a.sales || []),
-    };
-    setState(nextState);
-    pushToast("ok", "Imported", "Database restored from JSON.");
-  };
-
-  const upsertDatabaseRow = (email: string, patch: any) => {
-    setState((prev: any) => {
-      const next = { ...prev, database: [...prev.database] };
-      const key = safeLower(email);
-      const idx = next.database.findIndex((x: any) => safeLower(x.email) === key);
-      if (idx >= 0) next.database[idx] = { ...next.database[idx], ...patch };
-      return next;
-    });
-  };
-
-  const removeDatabaseRow = (email: string) =>
-    setState((prev: any) => ({
-      ...prev,
-      database: prev.database.filter((x: any) => safeLower(x.email) !== safeLower(email)),
-      bookings: prev.bookings.filter((b: any) => safeLower(b.email) !== safeLower(email)),
-      sales: prev.sales.filter((s: any) => safeLower(s.email) !== safeLower(email)),
-    }));
-
-  // --------- THE ENGINE: Smart Import ingestion ----------
+  // Ingestion Logic
   const ingestFromPaste = (text: string) => {
-    let summary: any = null;
-
     setState((prev: any) => {
       const { parsed, errors } = parsePaste(text, getRewardTypes(prev.settings));
       const now = new Date().toISOString();
-
       const next = {
         ...prev,
         database: [...prev.database],
@@ -1457,7 +932,6 @@ export default function App() {
       const dbEmails = new Set(next.database.map((a: any) => safeLower(a.email)));
       const hotelById = new Map(next.hotels.map((h: any) => [String(h.hotelId), h]));
       const hotelIdByName = new Map(next.hotels.map((h: any) => [safeLower(h.name), String(h.hotelId)]));
-
       const existingBookingKeys = new Set(next.bookings.map((b: any) => `${safeLower(b.email)}::${String(b.bookingNo)}`));
 
       let added = 0;
@@ -1469,1625 +943,1163 @@ export default function App() {
         const bookingKey = `${safeLower(row.email)}::${String(row.bookingNo)}`;
         if (existingBookingKeys.has(bookingKey)) {
           dupSkipped += 1;
-          next.audit.push({ id: uid(), at: now, type: "DUP_SKIP", msg: `Duplicate booking skipped: ${row.email} / ${row.bookingNo}` });
           continue;
         }
 
-        // ensure account exists
-        if (!dbEmails.has(safeLower(row.email))) {
-          if (prev.settings.autoCreateFromImport) {
-            next.database.push({
-              email: row.email,
-              password: "",
-              manualStatus: "Активен",
-              notes: "AUTO_CREATED_FROM_IMPORT",
-              createdAt: todayISO(),
-            });
-            dbEmails.add(safeLower(row.email));
-            accCreated += 1;
-            next.audit.push({ id: uid(), at: now, type: "ACCOUNT_CREATE", msg: `Account auto-created: ${row.email}` });
-          }
+        if (!dbEmails.has(safeLower(row.email)) && prev.settings.autoCreateFromImport) {
+          next.database.push({ email: row.email, password: "", manualStatus: "Активен", notes: "AUTO_CREATED_FROM_IMPORT", createdAt: todayISO() });
+          dbEmails.add(safeLower(row.email));
+          accCreated += 1;
+          next.audit.push({ id: uid(), at: now, type: "ACCOUNT_CREATE", msg: `Account auto-created: ${row.email}` });
         }
 
-        // resolve/create hotel
         let hid = (row.hotelId || "").trim();
         const hname = (row.hotelName || "").trim();
-
         if (!hid) {
           const match = hotelIdByName.get(safeLower(hname));
           if (match) hid = match;
         }
 
         if (hid) {
-          if (!hotelById.has(hid)) {
-            if (prev.settings.autoCreateFromImport) {
-              const nh = { hotelId: hid, name: hname || hid, manualStatus: "OK", notes: "AUTO_CREATED_FROM_IMPORT" };
-              next.hotels.push(nh);
-              hotelById.set(hid, nh);
-              hotelIdByName.set(safeLower(nh.name), hid);
-              hotelCreated += 1;
-              next.audit.push({ id: uid(), at: now, type: "HOTEL_CREATE", msg: `Hotel auto-created: ${hid} — ${nh.name}` });
-            }
-          } else {
-            const existing = hotelById.get(hid);
-            if (existing && (!existing.name || existing.name.trim() === "") && hname) {
-              existing.name = hname;
-              hotelIdByName.set(safeLower(hname), hid);
-              next.audit.push({ id: uid(), at: now, type: "HOTEL_UPDATE", msg: `Hotel name updated: ${hid} — ${hname}` });
-            }
+          if (!hotelById.has(hid) && prev.settings.autoCreateFromImport) {
+            const nh = { hotelId: hid, name: hname || hid, manualStatus: "OK", notes: "AUTO_CREATED_FROM_IMPORT" };
+            next.hotels.push(nh);
+            hotelById.set(hid, nh);
+            hotelIdByName.set(safeLower(nh.name), hid);
+            hotelCreated += 1;
           }
-        } else {
-          // no hid, generate stable from name
-          if (prev.settings.autoCreateFromImport) {
-            hid = stableHotelIdFromName(hname);
-            if (!hotelById.has(hid)) {
-              const nh = { hotelId: hid, name: hname || hid, manualStatus: "OK", notes: "AUTO_CREATED_FROM_IMPORT" };
-              next.hotels.push(nh);
-              hotelById.set(hid, nh);
-              hotelIdByName.set(safeLower(nh.name), hid);
-              hotelCreated += 1;
-              next.audit.push({ id: uid(), at: now, type: "HOTEL_CREATE", msg: `Hotel auto-created: ${hid} — ${nh.name}` });
-            }
+        } else if (prev.settings.autoCreateFromImport) {
+          hid = stableHotelIdFromName(hname);
+          if (!hotelById.has(hid)) {
+            const nh = { hotelId: hid, name: hname || hid, manualStatus: "OK", notes: "AUTO_CREATED_FROM_IMPORT" };
+            next.hotels.push(nh);
+            hotelById.set(hid, nh);
+            hotelCreated += 1;
           }
         }
 
-        // add booking
         next.bookings.push({
-          bookingId: uid(),
-          createdAt: row.createdAt,
-          email: row.email,
-          bookingNo: row.bookingNo,
-          pin: row.pin,
-          hotelId: hid || row.hotelId || "",
-          hotelNameSnapshot: hname || hid || "",
-          cost: row.cost,
-          checkIn: row.checkIn,
-          checkOut: row.checkOut,
-          promoCode: row.promoCode || "",
-          rewardAmount: row.rewardAmount || 0,
-          rewardCurrency: row.rewardCurrency || "USD",
-          rewardType: row.rewardType || "Booking",
-          airline: row.airline || "",
-          rewardPaidOn: row.rewardPaidOn || "",
-          status: row.status,
-          level: row.level || "",
-          note: row.note || "",
-          _raw: row._raw || "",
+          bookingId: uid(), createdAt: row.createdAt, email: row.email, bookingNo: row.bookingNo, pin: row.pin,
+          hotelId: hid || row.hotelId || "", hotelNameSnapshot: hname || hid || "", cost: row.cost, checkIn: row.checkIn, checkOut: row.checkOut,
+          promoCode: row.promoCode || "", rewardAmount: row.rewardAmount || 0, rewardCurrency: row.rewardCurrency || "USD",
+          rewardType: row.rewardType || "Booking", airline: row.airline || "", rewardPaidOn: row.rewardPaidOn || "",
+          status: row.status, level: row.level || "", note: row.note || "", _raw: row._raw || "",
         });
-
         existingBookingKeys.add(bookingKey);
         added += 1;
         next.audit.push({ id: uid(), at: now, type: "BOOKING_ADD", msg: `Booking added: ${row.email} / ${row.bookingNo} / ${row.status}` });
       }
 
-      // errors log
-      for (const e of errors) {
-        next.audit.push({ id: uid(), at: now, type: "PARSE_ERROR", msg: `Parse error line ${e.line}: ${e.raw}` });
-      }
-
       next.audit = next.audit.slice(-400);
-
-      summary = {
-        at: now,
-        added,
-        dupSkipped,
-        accCreated,
-        hotelCreated,
-        errors: errors.length,
-        parsed: parsed.length,
-      };
-
-      next.lastImport = summary;
+      next.lastImport = { at: now, added, dupSkipped, accCreated, hotelCreated, errors: errors.length };
       return next;
     });
-
-    if (summary) {
-      if (summary.parsed === 0) {
-        pushToast("warn", "Import: nothing parsed", "Проверь, что вставляешь табами (из Google Sheets).");
-      } else {
-        const msg = `Added ${summary.added}. New accounts ${summary.accCreated}. New hotels ${summary.hotelCreated}. Dup ${summary.dupSkipped}. Errors ${summary.errors}.`;
-        pushToast(summary.errors > 0 ? "warn" : "ok", "Smart Import ingested", msg);
-      }
-    }
+    pushToast("ok", "Import Processed");
   };
 
-  const ingestRawAccounts = (text: string) => {
-    let summary: any = null;
+  const handleImport = (payload: any) => {
+      try {
+        if (!payload || !Array.isArray(payload.accounts)) throw new Error("Invalid format");
+        setState({
+            ...state,
+            settings: payload.settings || state.settings,
+            hotels: Array.isArray(payload.hotels) ? payload.hotels : state.hotels,
+            database: payload.accounts.map((a: any) => { const { bookings, sales, ...r } = a; return r; }),
+            bookings: payload.accounts.flatMap((a: any) => a.bookings || []),
+            sales: payload.accounts.flatMap((a: any) => a.sales || []),
+            specialRewards: Array.isArray(payload.specialRewards) ? payload.specialRewards : state.specialRewards
+        });
+        pushToast("ok", "Import Successful");
+      } catch(e) {
+          setImportError("Failed to parse JSON");
+      }
+  };
 
-    setState((prev: any) => {
-      const { rows, errors } = parseAccountsPaste(text);
-      const now = new Date().toISOString();
-
-      const next = { ...prev, database: [...prev.database], audit: [...(prev.audit || [])] };
-      const byEmail = new Map(next.database.map((a: any) => [safeLower(a.email), a]));
-
-      let updated = 0;
-      let created = 0;
-
-      for (const r of rows) {
-        const key = safeLower(r.email);
-        const existing = byEmail.get(key);
-        if (existing) {
-          if (String(existing.password || "").trim() !== String(r.password || "").trim()) {
-            existing.password = r.password;
-            updated += 1;
-            next.audit.push({ id: uid(), at: now, type: "RAW_UPDATE", msg: `Password updated: ${r.email}` });
+  const handleRawAccountsImport = () => {
+      const { rows, errors } = parseAccountsPaste(rawAccountsInput);
+      if (rows.length === 0) { pushToast("warn", "No valid rows found"); return; }
+      setState((prev: any) => {
+          const next = { ...prev, database: [...prev.database] };
+          let updated = 0; let added = 0;
+          for (const r of rows) {
+              const idx = next.database.findIndex((x: any) => safeLower(x.email) === safeLower(r.email));
+              if (idx >= 0) {
+                  if (r.password) { next.database[idx].password = r.password; updated++; }
+              } else {
+                  next.database.push({ email: r.email, password: r.password, manualStatus: "Активен", notes: "RAW_IMPORT", createdAt: todayISO() });
+                  added++;
+              }
           }
-        } else {
-          const a = {
-            email: r.email,
-            password: r.password || "",
-            manualStatus: "Активен",
-            notes: "RAW_DATA_IMPORT",
-            createdAt: todayISO(),
-          };
-          next.database.push(a);
-          byEmail.set(key, a);
-          created += 1;
-          next.audit.push({ id: uid(), at: now, type: "RAW_CREATE", msg: `Account created from RawData: ${r.email}` });
-        }
-      }
-
-      for (const e of errors) {
-        next.audit.push({ id: uid(), at: now, type: "RAW_PARSE_ERROR", msg: `RawData parse error line ${e.line}: ${e.raw}` });
-      }
-
-      next.audit = next.audit.slice(-400);
-
-      summary = { at: now, rows: rows.length, updated, created, errors: errors.length };
-      next.lastRawImport = summary;
-
-      return next;
-    });
-
-    if (summary) {
-      if (summary.rows === 0) pushToast("warn", "RawData: nothing parsed", "Формат: email<TAB>password");
-      else pushToast(summary.errors ? "warn" : "ok", "RawData ingested", `Rows ${summary.rows}. Updated ${summary.updated}. Created ${summary.created}. Errors ${summary.errors}.`);
-    }
+          return next;
+      });
+      if (errors.length > 0) pushToast("warn", "Some rows were skipped", `${errors.length} invalid rows.`);
+      setRawAccountsInput("");
+      pushToast("ok", `Imported Accounts`, `Added: ${rows.length}`);
   };
 
-  // --------- Views ----------
+  const handleRawSpentImport = () => {
+      const { rows, errors } = parseSpentPaste(rawSpentInput);
+      if (rows.length === 0) { pushToast("warn", "No valid rows found"); return; }
+      setState((prev: any) => {
+          const next = { ...prev, sales: [...prev.sales] };
+          for (const r of rows) {
+              next.sales.push({ id: uid(), date: r.date, email: r.email, amount: r.amount, note: r.note });
+          }
+          return next;
+      });
+      if (errors.length > 0) pushToast("warn", "Some rows were skipped", `${errors.length} invalid rows.`);
+      setRawSpentInput("");
+      pushToast("ok", `Imported Sales`, `Added: ${rows.length}`);
+  };
+
+  const handleRawBlockedImport = () => {
+      const lines = (rawBlockedInput || "").split(/[\r\n]+/).map(l => l.trim()).filter(Boolean);
+      if (lines.length === 0) { pushToast("warn", "No valid emails found"); return; }
+
+      setState((prev: any) => {
+          const next = { ...prev, database: [...prev.database] };
+          const now = todayISO();
+
+          lines.forEach(email => {
+              const clean = safeLower(email);
+              if(!clean) return;
+              const idx = next.database.findIndex((x:any) => safeLower(x.email) === clean);
+              if (idx >= 0) {
+                  next.database[idx] = { ...next.database[idx], manualStatus: "Блок" };
+                  if (!next.database[idx].notes?.includes("MASS_BLOCK")) {
+                       next.database[idx].notes = (next.database[idx].notes || "") + " MASS_BLOCK";
+                  }
+              } else {
+                  next.database.push({ email: clean, password: "", manualStatus: "Блок", notes: "MASS_BLOCK_IMPORT", createdAt: now });
+              }
+          });
+          return next;
+      });
+
+      setRawBlockedInput("");
+      pushToast("ok", "Block List Processed", `Targeted: ${lines.length} emails`);
+  };
+
+  const handlePromoRewardAdd = () => {
+    const email = safeLower(rawPromoEmail);
+    const amount = parseMoney(rawPromoAmount);
+    if (!email || !email.includes("@") || !Number.isFinite(amount) || amount <= 0) {
+      pushToast("warn", "Invalid promo reward", "Use a valid email + amount.");
+      return;
+    }
+    setState((prev: any) => ({
+      ...prev,
+      specialRewards: [
+        ...(prev.specialRewards || []),
+        { id: uid(), email, amount, promo: rawPromoCode.trim() || "PROMO", createdAt: todayISO() },
+      ],
+    }));
+    setRawPromoEmail("");
+    setRawPromoAmount("");
+    setRawPromoCode("");
+    pushToast("ok", "Promo reward added", `${email} • ${money(amount)}`);
+  };
+
+  const upsertDatabaseRow = (email: string, patch: any) => {
+    setState((prev: any) => {
+      const next = { ...prev, database: [...prev.database] };
+      const idx = next.database.findIndex((x: any) => safeLower(x.email) === safeLower(email));
+      if (idx >= 0) next.database[idx] = { ...next.database[idx], ...patch };
+      return next;
+    });
+  };
+
+  const upsertBookingRow = (bookingId: string, patch: any) => {
+      setState((prev: any) => {
+          const next = { ...prev, bookings: [...prev.bookings] };
+          const idx = next.bookings.findIndex((x: any) => x.bookingId === bookingId);
+          if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], ...patch };
+          return next;
+      });
+  };
+
+  const copyAllEmails = async (filter?: (a: any) => boolean) => {
+      const emails = state.database.filter(filter || (() => true)).map((a: any) => a.email).join("\n");
+      await copyToClipboard(emails);
+      pushToast("ok", "Copied Emails", `${emails.split('\n').length} items copied.`);
+  };
+
+  const togglePassword = (bookingId: string) => {
+    setVisiblePasswords(prev => ({ ...prev, [bookingId]: !prev[bookingId] }));
+  };
+
+  const handleExportJSON = () => {
+    const payload = exportStateByEmail(state);
+    downloadJSON(`ops-dash-export-${todayISO()}.json`, payload);
+    pushToast("ok", "Export Complete", "JSON snapshot saved.");
+  };
+
+  const sortRows = (rows: any[], key: string, dir: "asc" | "desc") => {
+    const sorted = [...rows].sort((a, b) => {
+      const aVal = a?.[key];
+      const bVal = b?.[key];
+      if (aVal == null && bVal == null) return 0;
+      if (aVal == null) return 1;
+      if (bVal == null) return -1;
+      if (typeof aVal === "number" && typeof bVal === "number") return aVal - bVal;
+      return String(aVal).localeCompare(String(bVal));
+    });
+    return dir === "asc" ? sorted : sorted.reverse();
+  };
+
+  const theme = { grid: "#333333", axis: "#666666", tooltip: { backgroundColor: "#111111", borderColor: "#333333", color: "#FFFFFF" } };
+  const rewardAccount = rewardDetailAccount
+    ? model.derivedAccounts.find((a: any) => safeLower(a.email) === safeLower(rewardDetailAccount))
+    : null;
+  const rewardAccountBookings = rewardDetailAccount
+    ? state.bookings.filter((b: any) => safeLower(b.email) === safeLower(rewardDetailAccount))
+    : [];
+  const rewardAccountPending = rewardAccountBookings
+    .filter((b: any) => Number(b.rewardAmount || 0) > 0 && !b.rewardPaidOn)
+    .map((b: any) => ({ ...b, eta: computeRewardETA(b, state.settings) }));
+  const rewardAccountPendingTotal = rewardAccountPending.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
+  const rewardAccountPositive = rewardAccountBookings.filter((b: any) => b.status !== "Cancelled");
+  const rewardAccountNegative = rewardAccountBookings.filter((b: any) => b.status === "Cancelled");
+  const rewardFutureBalance = rewardAccount ? Number(rewardAccount.netBalance || 0) + rewardAccountPendingTotal : rewardAccountPendingTotal;
+
+  // --- VIEWS ---
   const OverviewView = () => {
     const statusData = [
-      { name: "Pending", value: model.statusCounts.Pending || 0, fill: "#94A3B8" },
-      { name: "Confirmed", value: model.statusCounts.Confirmed || 0, fill: COLORS.success },
-      { name: "Completed", value: model.statusCounts.Completed || 0, fill: COLORS.gold },
-      { name: "Cancelled", value: model.statusCounts.Cancelled || 0, fill: COLORS.danger },
+      { name: "Pending", value: model.statusCounts.Pending || 0, fill: "#666666" },
+      { name: "Confirmed", value: model.statusCounts.Confirmed || 0, fill: AUDI_COLORS.white },
+      { name: "Completed", value: model.statusCounts.Completed || 0, fill: AUDI_COLORS.silver },
+      { name: "Cancelled", value: model.statusCounts.Cancelled || 0, fill: AUDI_COLORS.brightRed },
     ];
 
     return (
-      <div className="space-y-8 animate-in fade-in duration-500">
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6">
-          <StatCard theme={themeMode} title="Total Net Balance" value={money(totals.totalNet)} subValue="Bonuses − Sales" icon={Wallet} />
-          <StatCard theme={themeMode} title="Total Bookings" value={totals.totalBookings} subValue="All statuses" icon={BookOpen} onClick={() => setActiveTab("bookings")} />
-          <StatCard theme={themeMode} title="Accounts Ready" value={model.accountsReady.length} subValue="Passed all rules" icon={Zap} onClick={() => setActiveTab("next_action")} />
-          <StatCard theme={themeMode} title="Missing Passwords" value={totals.missingPasswords} subValue="Needs RawData" icon={Database} onClick={() => setActiveTab("rawdata")} />
-          <StatCard theme={themeMode} title="Blocked Accounts" value={totals.blocked} subValue="Manual + TECH" icon={ShieldAlert} onClick={() => setActiveTab("database")} />
+      <div className="space-y-6 animate-in fade-in duration-500">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
+          <StatCard isActive={true} title="Net Balance" value={money(model.totalLeft)} subValue={`Profit (Earned ${money(model.totalEarned)})`} icon={Wallet} />
+          <StatCard title="Total Spent" value={money(model.totalSpent)} subValue="Costs" icon={CreditCard} color="#FACC15" onClick={() => setActiveTab("spent")} />
+          <StatCard title="Total Bookings" value={totals.totalBookings} subValue="All statuses" icon={BookOpen} onClick={() => setActiveTab("bookings")} />
+          <StatCard title="Ready Accounts" value={model.accountsReady.length} subValue="Actionable" icon={Zap} onClick={() => setActiveTab("command_center")} />
+          <StatCard title="Blocked" value={totals.blocked} subValue="Manual + TECH" icon={ShieldAlert} onClick={() => setActiveTab("database")} />
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
-          <div className={`xl:col-span-2 ${theme.panel} rounded-2xl p-6`}>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className={`font-bold text-lg ${themeMode === "dark" ? "text-white" : "text-slate-900"}`}>Net Trend</h3>
-              <div className="flex items-center gap-2 text-xs">
-                {[30, 50, 365].map((d) => (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+          <div className="xl:col-span-2 bg-[#111111] border border-[#333333] rounded-sm p-6 relative overflow-hidden">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="font-bold text-lg text-white uppercase tracking-wider flex items-center gap-2">
+                 <Activity size={18} className="text-[#F40009]"/> Money Flow
+              </h3>
+              <div className="flex bg-[#222] rounded-sm p-1">
+                {[30, 90].map((d) => (
                   <button
                     key={d}
                     onClick={() => setTrendDays(d)}
-                    className={`px-2.5 py-1 rounded-full border ${
-                      trendDays === d ? "border-blue-500 text-blue-500" : "border-slate-200 text-slate-500"
-                    }`}
+                    className={`px-3 py-1 rounded-sm text-[10px] font-bold uppercase transition-all ${trendDays === d ? "bg-[#F40009] text-white" : "text-zinc-500 hover:text-zinc-300"}`}
                   >
-                    {d}d
+                    {d}D
                   </button>
                 ))}
               </div>
             </div>
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={netTrend}>
+                <BarChart data={netTrend}>
                   <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
-                  <XAxis dataKey="date" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
-                  <RechartsTooltip contentStyle={theme.tooltip} />
-                  <Area type="monotone" dataKey="net" stroke="#3B82F6" fill="#3B82F620" strokeWidth={2} />
-                </AreaChart>
+                  <XAxis dataKey="date" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#666" }} minTickGap={30} />
+                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#666" }} />
+                  <RechartsTooltip contentStyle={theme.tooltip} itemStyle={{color: '#fff'}} />
+                  <Bar dataKey="earned" name="Earned" fill="#4ADE80" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="spent" name="Spent" fill="#FACC15" radius={[4, 4, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
 
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className={`font-bold text-lg mb-4 ${themeMode === "dark" ? "text-white" : "text-slate-900"}`}>Booking Status Mix</h3>
-            <div className="h-64 w-full">
+          <div className="bg-[#111111] border border-[#333333] rounded-sm p-6">
+            <h3 className="font-bold text-lg text-white uppercase tracking-wider mb-4 flex items-center gap-2">
+                <PieChartIcon size={18} className="text-zinc-500" /> Mix
+            </h3>
+            <div className="h-64 w-full relative">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={statusData} dataKey="value" cx="50%" cy="50%" innerRadius={55} outerRadius={85} paddingAngle={4} stroke="none">
-                    {statusData.map((x: any, i: number) => (
-                      <Cell key={i} fill={x.fill} />
-                    ))}
+                  <Pie data={statusData} dataKey="value" cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={2} stroke="none">
+                    {statusData.map((x: any, i: number) => <Cell key={i} fill={x.fill} />)}
                   </Pie>
                   <RechartsTooltip contentStyle={theme.tooltip} />
                 </PieChart>
               </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Accounts Registered (per day)</h3>
-            <div className="h-56 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={accountsByDay}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
-                  <XAxis dataKey="date" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
-                  <RechartsTooltip contentStyle={theme.tooltip} />
-                  <Bar dataKey="count" radius={[6, 6, 0, 0]} fill="#60A5FA" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Rewards Earned (per day)</h3>
-            <div className="h-56 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={rewardTrend}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
-                  <XAxis dataKey="date" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
-                  <RechartsTooltip contentStyle={theme.tooltip} />
-                  <Area type="monotone" dataKey="total" stroke="#10B981" fill="#10B98120" strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Spent (per day)</h3>
-            <div className="h-56 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={spentTrend}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
-                  <XAxis dataKey="date" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
-                  <RechartsTooltip contentStyle={theme.tooltip} />
-                  <Area type="monotone" dataKey="total" stroke="#F59E0B" fill="#F59E0B20" strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-
-        <div className={`${theme.panel} rounded-2xl p-6`}>
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="font-bold text-lg text-slate-900">Hotels by Chain (Cancelled vs Other)</h3>
-              <p className="text-xs text-slate-500">Top 12 chains by volume • stacked bars</p>
-            </div>
-          </div>
-          <div className="h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={chainStats}
-                layout="vertical"
-                barSize={14}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} horizontal={false} />
-                <XAxis type="number" stroke={theme.axis} axisLine={false} tickLine={false} />
-                <YAxis type="category" dataKey="chain" stroke={theme.axis} axisLine={false} tickLine={false} width={120} />
-                <RechartsTooltip contentStyle={theme.tooltip} />
-                <Bar
-                  dataKey="other"
-                  stackId="a"
-                  fill="#3B82F6"
-                  radius={[0, 6, 6, 0]}
-                  onClick={(data: any) => {
-                    if (!data?.payload?.chain) return;
-                    setChainModalName(data.payload.chain);
-                    setChainModalOpen(true);
-                  }}
-                />
-                <Bar
-                  dataKey="cancelled"
-                  stackId="a"
-                  fill="#EF4444"
-                  radius={[0, 6, 6, 0]}
-                  onClick={(data: any) => {
-                    if (!data?.payload?.chain) return;
-                    setChainModalName(data.payload.chain);
-                    setChainModalOpen(true);
-                  }}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Lead Time vs Cancel Rate</h3>
-            <div className="h-56 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={leadTimeStats}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
-                  <XAxis dataKey="bucket" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
-                  <RechartsTooltip contentStyle={theme.tooltip} />
-                  <Bar dataKey="cancelRate" radius={[6, 6, 0, 0]} fill="#EF4444" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="mt-3 text-xs text-slate-500">Cancel rate (%) by days between booking and check-in.</div>
-          </div>
-
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Promo vs No-Promo Cancels</h3>
-            <div className="space-y-3 text-xs text-slate-600">
-              <div className="flex items-center justify-between">
-                <span>With Promo</span>
-                <span className="font-mono text-rose-300">{promoStats.withRate}%</span>
-              </div>
-              <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
-                <div className="h-full bg-rose-500/60" style={{ width: `${promoStats.withRate}%` }} />
-              </div>
-              <div className="flex items-center justify-between mt-4">
-                <span>No Promo</span>
-                <span className="font-mono text-emerald-300">{promoStats.withoutRate}%</span>
-              </div>
-              <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
-                <div className="h-full bg-emerald-500/60" style={{ width: `${promoStats.withoutRate}%` }} />
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none">
+                  <div className="text-3xl font-bold text-white">{totals.totalBookings}</div>
+                  <div className="text-[10px] text-zinc-500 uppercase tracking-widest">Total</div>
               </div>
             </div>
           </div>
-
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Chain Reliability</h3>
-            <div className="space-y-2 text-xs text-slate-600">
-              {chainReliability.slice(0, 6).map((c) => (
-                <div key={c.chain} className="flex items-center justify-between">
-                  <span className="truncate">{c.chain}</span>
-                  <span className={`font-mono ${c.cancelRate >= 30 ? "text-rose-300" : "text-emerald-300"}`}>
-                    {c.cancelRate}% ({c.cancelled}/{c.total})
-                  </span>
-                </div>
-              ))}
-              {chainReliability.length === 0 && <div className="text-slate-500">No chain data.</div>}
-            </div>
-          </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-bold text-lg text-slate-900">Best Hotels</h3>
-              <button
-                onClick={() => setBestHotelMode(bestHotelMode === "cancellations" ? "spend" : "cancellations")}
-                className="px-3 py-1 rounded-full border border-slate-200 text-xs text-slate-600"
-              >
-                {bestHotelMode === "cancellations" ? "By spend + low cancels" : "By low cancels"}
-              </button>
-            </div>
-            <div className="space-y-2 text-xs text-slate-600">
-              {(bestHotelMode === "cancellations" ? bestHotels : bestHotelsBySpend).map((h: any) => (
-                <div key={`${h.hotelId}-${h.name}`} className="flex items-center justify-between gap-3">
-                  <span className="truncate">{h.name}</span>
-                  <span className={`font-mono ${h.cancelRate >= 25 ? "text-rose-300" : "text-emerald-300"}`}>
-                    {h.cancelRate}% ({h.cancelled}/{h.total})
-                  </span>
-                </div>
-              ))}
-              {(bestHotelMode === "cancellations" ? bestHotels : bestHotelsBySpend).length === 0 && (
-                <div className="text-slate-500">Not enough data yet.</div>
-              )}
-            </div>
-          </div>
-
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Risky Accounts</h3>
-            <div className="space-y-2 text-xs text-slate-600">
-              {riskyAccounts.map((a: any) => (
-                <div key={a.emailKey} className="flex items-center justify-between gap-3">
-                  <span className="truncate">{a.email}</span>
-                  <span className={`font-mono ${a.risk >= 6 ? "text-rose-300" : "text-amber-300"}`}>
-                    risk {a.risk}
-                  </span>
-                </div>
-              ))}
-              {riskyAccounts.length === 0 && <div className="text-slate-500">No accounts.</div>}
-            </div>
-          </div>
-
-          <div className={`${theme.panel} rounded-2xl p-6`}>
-            <h3 className="font-bold text-lg text-slate-900 mb-4">Recommended Next Actions</h3>
-            <div className="space-y-2 text-xs text-slate-600">
-              {recommendedPairs.map((p, idx) => (
-                <div key={`${p.email}-${idx}`} className="flex items-center justify-between gap-3">
-                  <span className="truncate">{p.email}</span>
-                  <span className="text-slate-500">→</span>
-                  <span className="truncate">{p.hotel}</span>
-                </div>
-              ))}
-              {recommendedPairs.length === 0 && <div className="text-slate-500">No eligible pairs yet.</div>}
-            </div>
-          </div>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+             <div className="bg-[#111111] border border-[#333333] rounded-sm p-6">
+                 <h3 className="font-bold text-lg text-white uppercase tracking-wider mb-4 flex items-center gap-2">
+                     <TrendingUp size={18} className="text-green-500" /> Reward Accumulation
+                 </h3>
+                 <div className="h-64 w-full">
+                     <ResponsiveContainer width="100%" height="100%">
+                         <AreaChart data={rewardAccumulation}>
+                             <defs>
+                                 <linearGradient id="colorAcc" x1="0" y1="0" x2="0" y2="1">
+                                     <stop offset="5%" stopColor="#4ADE80" stopOpacity={0.3}/>
+                                     <stop offset="95%" stopColor="#4ADE80" stopOpacity={0}/>
+                                 </linearGradient>
+                             </defs>
+                             <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
+                             <XAxis dataKey="date" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#666" }} minTickGap={30} />
+                             <YAxis stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#666" }} />
+                             <RechartsTooltip contentStyle={theme.tooltip} />
+                             <Area type="monotone" dataKey="acc" stroke="#4ADE80" strokeWidth={2} fillOpacity={1} fill="url(#colorAcc)" />
+                         </AreaChart>
+                     </ResponsiveContainer>
+                 </div>
+             </div>
+             <div className="bg-[#111111] border border-[#333333] rounded-sm p-6">
+               <PanelHeader
+                 icon={Target}
+                 title="Command Highlights"
+                 subtitle="Top ready accounts & best hotels"
+               />
+               <div className="space-y-4">
+                 <div>
+                   <div className="text-xs text-zinc-500 uppercase tracking-widest mb-2">Top Ready Accounts</div>
+                   <div className="space-y-2">
+                     {model.accountsReady.slice(0, 4).map((a: any) => (
+                       <div key={a.emailKey} className="flex items-center justify-between border border-[#222] rounded-sm px-3 py-2 bg-[#0F0F0F]">
+                         <div className="text-xs text-white font-mono truncate">{a.email}</div>
+                         <div className="text-[10px] text-zinc-500 font-mono">BAL {money(a.netBalance)}</div>
+                       </div>
+                     ))}
+                     {model.accountsReady.length === 0 && <div className="text-xs text-zinc-600">No ready accounts yet.</div>}
+                   </div>
+                 </div>
+                 <div>
+                   <div className="text-xs text-zinc-500 uppercase tracking-widest mb-2">Top Hotels</div>
+                   <div className="space-y-2">
+                     {model.topHotels.slice(0, 4).map((h: any) => (
+                       <div key={h.hotelId} className="flex items-center justify-between border border-[#222] rounded-sm px-3 py-2 bg-[#0F0F0F]">
+                         <div className="text-xs text-white truncate">{h.name}</div>
+                         <div className="text-[10px] text-zinc-500 font-mono">{h.confirmed} CONF</div>
+                       </div>
+                     ))}
+                   </div>
+                 </div>
+               </div>
+             </div>
         </div>
-
       </div>
     );
   };
 
-  const DatabaseView = () => (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-900">Database (Accounts)</h2>
-          <p className="text-xs text-slate-500">
-            Passwords приходят из <b>RawData</b>. Ручной статус <b>Блок</b> — global kill-switch.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-slate-500 flex items-center gap-2">
-            <input type="checkbox" checked={dbOnlyMissing} onChange={(e) => setDbOnlyMissing((e.target as HTMLInputElement).checked)} />
-            only emails without passwords
-          </label>
-          <button
-            onClick={() => downloadCSV("database.csv", state.database)}
-            className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-sm font-bold inline-flex items-center gap-2"
-          >
-            <Download size={16} /> Export
-          </button>
-        </div>
-      </div>
+  const DatabaseView = () => {
+    const filter = tableFilters.database;
+    const sort = tableSorts.database;
+    const filtered = model.derivedAccounts.filter((a: any) => {
+      if (!filter) return searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true;
+      const haystack = `${a.email} ${a.manualStatus} ${a.notes ?? ""}`.toLowerCase();
+      return haystack.includes(filter.toLowerCase());
+    });
+    const rows = sortRows(filtered, sort.key, sort.dir);
 
-      <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
+    return (
+    <div className="space-y-6">
+       <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+                 <div className="p-2 bg-[#F40009] text-white rounded-sm">
+                     <Users size={20} />
+                 </div>
+                 <div>
+                     <h2 className="text-xl font-bold text-white uppercase tracking-wider">Database</h2>
+                     <p className="text-xs text-zinc-500">Account Registry & Status Control</p>
+                 </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                value={filter}
+                onChange={(e) => setTableFilters((prev) => ({ ...prev, database: e.target.value }))}
+                placeholder="Filter accounts"
+                className="bg-[#0A0A0A] border border-[#333] rounded-sm px-3 py-2 text-xs text-white placeholder:text-zinc-600 focus:border-[#F40009] outline-none"
+              />
+              <select
+                value={`${sort.key}:${sort.dir}`}
+                onChange={(e) => {
+                  const [key, dir] = e.target.value.split(":");
+                  setTableSorts((prev) => ({ ...prev, database: { key, dir: dir as "asc" | "desc" } }));
+                }}
+                className="bg-[#0A0A0A] border border-[#333] rounded-sm px-2 py-2 text-xs text-white"
+              >
+                <option value="email:asc">Email A-Z</option>
+                <option value="email:desc">Email Z-A</option>
+                <option value="netBalance:desc">Net Balance ↓</option>
+                <option value="netBalance:asc">Net Balance ↑</option>
+                <option value="totalBookings:desc">Bookings ↓</option>
+                <option value="totalBookings:asc">Bookings ↑</option>
+              </select>
+              <button onClick={() => downloadCSV("database.csv", state.database)} className="px-4 py-2 bg-[#222] hover:bg-[#333] text-white text-xs font-bold uppercase tracking-wider rounded-sm border border-[#333] transition-colors">Export CSV</button>
+            </div>
+       </div>
+
+      <div className="border border-[#333333] bg-[#111111] rounded-sm overflow-hidden">
         <div className="overflow-x-auto max-h-[75vh]">
-          <table className="w-full text-left text-sm text-slate-500">
-            <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
+          <table className="w-full text-left text-sm text-zinc-400">
+            <thead className="bg-[#1A1A1A] text-[10px] uppercase font-bold text-zinc-500 sticky top-0 z-10 tracking-widest border-b border-[#333]">
               <tr>
-                <th className="px-6 py-4">Email</th>
-                <th className="px-6 py-4">Password</th>
-                <th className="px-6 py-4">Manual Status</th>
-                <th className="px-6 py-4">Metrics</th>
+                <th className="px-6 py-4">Account</th>
+                <th className="px-6 py-4">Security</th>
+                <th className="px-6 py-4">Status</th>
+                <th className="px-6 py-4">Performance</th>
                 <th className="px-6 py-4">Notes</th>
-                <th className="px-6 py-4 text-right">Actions</th>
+                <th className="px-6 py-4 text-right">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200">
-              {model.derivedAccounts
-                .filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true))
-                .filter((a: any) => (dbOnlyMissing ? !String(a.password || "").trim() : true))
-                .map((a: any) => {
+            <tbody className="divide-y divide-[#222]">
+              {rows.map((a: any) => {
                   const missing = !String(a.password || "").trim();
                   return (
-                    <tr key={a.emailKey} className={`hover:bg-slate-50 ${missing ? "bg-rose-500/5" : ""}`}>
+                    <tr key={a.emailKey} className="hover:bg-[#1A1A1A] transition-colors group">
                       <td className="px-6 py-4 align-top">
-                        <div className="text-slate-900 font-bold">{a.email}</div>
-                        <div className="mt-2 flex gap-2">
-                          <button onClick={() => copyToClipboard(a.email)} className="text-xs text-blue-400 hover:text-blue-300">Copy Email</button>
-                          <button onClick={() => copyToClipboard(a.password || "")} className="text-xs text-blue-400 hover:text-blue-300">Copy Pass</button>
+                        <div className="text-white font-bold font-mono tracking-tight">{a.email}</div>
+                        <div className="mt-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={() => copyToClipboard(a.email)} className="text-[10px] uppercase font-bold text-zinc-500 hover:text-white">Copy</button>
                         </div>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {!a.isBlocked ? <Badge themeMode={themeMode} kind="active">ACTIVE</Badge> : <Badge themeMode={themeMode} kind="block">BLOCK</Badge>}
-                          {a.techBlocked && <Badge themeMode={themeMode} kind="tech">TECH</Badge>}
-                          {a.tier === "Gold" && <Badge themeMode={themeMode} kind="gold">GOLD</Badge>}
-                          {a.tier === "Platinum" && <Badge themeMode={themeMode} kind="plat">PLAT</Badge>}
-                          {a.canAddBooking ? <Badge themeMode={themeMode} kind="active">READY</Badge> : <Badge themeMode={themeMode} kind="dim">NOT READY</Badge>}
-                          {missing && <Badge themeMode={themeMode} kind="block">NO PASS</Badge>}
+                      </td>
+                      <td className="px-6 py-4 align-top">
+                        <input className={`bg-[#000] border border-[#333] rounded-sm px-2 py-1 text-zinc-300 w-full text-xs font-mono focus:border-[#F40009] outline-none transition-colors ${missing ? "border-red-900/50" : ""}`}
+                          value={a.password || ""} onChange={(e) => upsertDatabaseRow(a.email, { password: e.target.value })} placeholder={missing ? "MISSING" : "password"} />
+                      </td>
+                      <td className="px-6 py-4 align-top">
+                        <div className="flex flex-col gap-2">
+                            <select className="bg-[#000] border border-[#333] rounded-sm px-2 py-1 text-zinc-300 text-xs w-full focus:border-white outline-none" value={a.manualStatus} onChange={(e) => upsertDatabaseRow(a.email, { manualStatus: e.target.value })}>
+                            <option value="Активен">Active</option>
+                            <option value="Блок">Block</option>
+                            </select>
+                            <div className="flex flex-wrap gap-1">
+                                {!a.isBlocked ? <Badge kind="active">ACTIVE</Badge> : <Badge kind="block">BLOCKED</Badge>}
+                                {a.tier === "Gold" && <Badge kind="gold">GOLD</Badge>}
+                                {a.tier === "Platinum" && <Badge kind="plat">PLAT</Badge>}
+                            </div>
+                            {a.blockReason && <div className="text-[10px] text-[#F40009] font-mono leading-tight">{a.blockReason}</div>}
                         </div>
-                        {a.blockReason && <div className="mt-2 text-xs text-rose-300">{a.blockReason}</div>}
                       </td>
-
+                      <td className="px-6 py-4 align-top text-xs text-zinc-500 font-mono">
+                        <div className="flex justify-between"><span className="text-zinc-600">Total</span><span className="text-white">{a.totalBookings}</span></div>
+                        <div className="flex justify-between"><span className="text-zinc-600">Conf</span><span className="text-white">{a.confirmedBookings}</span></div>
+                        <div className="flex justify-between mt-1"><span className="text-zinc-600">Net</span><span className={`font-bold ${Number(a.netBalance)>0 ? "text-green-400" : "text-zinc-400"}`}>{money(a.netBalance)}</span></div>
+                      </td>
                       <td className="px-6 py-4 align-top">
-                        <input
-                          className={`bg-white border rounded px-2 py-1 text-slate-700 w-full text-xs font-mono ${
-                            missing ? "border-rose-500/40" : "border-slate-200"
-                          }`}
-                          value={a.password || ""}
-                          onChange={(e) => upsertDatabaseRow(a.email, { password: e.target.value })}
-                          placeholder="password"
-                        />
-                        {missing && <div className="mt-2 text-xs text-rose-300">Password not found → add in RawData</div>}
+                        <input className="bg-transparent border-b border-[#333] focus:border-white w-full text-xs text-zinc-400 py-1 outline-none transition-colors" value={a.notes || ""} onChange={(e) => upsertDatabaseRow(a.email, { notes: e.target.value })} placeholder="Add note..." />
                       </td>
-
-                      <td className="px-6 py-4 align-top">
-                        <select
-                          className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-900 text-xs w-full"
-                          value={a.manualStatus}
-                          onChange={(e) => upsertDatabaseRow(a.email, { manualStatus: e.target.value })}
-                        >
-                          <option value="Активен">Активен</option>
-                          <option value="Блок">Блок</option>
-                        </select>
-                      </td>
-
-                      <td className="px-6 py-4 align-top text-xs text-slate-600">
-                        <div className="flex justify-between"><span className="text-slate-500">Bookings</span><span className="font-bold">{a.totalBookings}</span></div>
-                        <div className="flex justify-between"><span className="text-slate-500">Confirmed</span><span>{a.confirmedBookings}</span></div>
-                        <div className="flex justify-between"><span className="text-slate-500">Cancelled</span><span>{a.cancelledBookings}</span></div>
-                        <div className="flex justify-between mt-2"><span className="text-slate-500">Balance</span><span className="font-mono">{money(a.netBalance)}</span></div>
-                        <div className="flex justify-between"><span className="text-slate-500">Active</span><span>{a.activeBookingsCount}/{state.settings.maxActiveBookings}</span></div>
-                        <div className="flex justify-between"><span className="text-slate-500">Cooldown</span><span>{a.cooldownOk ? "OK" : `${a.daysSinceLastBooking ?? "?"}d`}</span></div>
-                      </td>
-
-                      <td className="px-6 py-4 align-top">
-                        <input
-                          className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-full text-xs"
-                          value={a.notes || ""}
-                          onChange={(e) => upsertDatabaseRow(a.email, { notes: e.target.value })}
-                          placeholder="notes"
-                        />
-                      </td>
-
                       <td className="px-6 py-4 align-top text-right">
-                        <button
-                          onClick={() => removeDatabaseRow(a.email)}
-                          className="text-rose-400 hover:text-rose-300 text-xs font-bold border border-rose-900/50 bg-rose-900/10 px-3 py-2 rounded-xl hover:bg-rose-900/30"
-                        >
-                          DELETE
-                        </button>
+                        <button className="text-[#F40009] hover:text-red-400 text-[10px] font-bold uppercase tracking-widest border border-[#333] px-2 py-1 rounded-sm hover:border-[#F40009] transition-all">Delete</button>
                       </td>
                     </tr>
                   );
                 })}
-
-              {model.derivedAccounts.length === 0 && (
-                <tr><td colSpan={6} className="px-6 py-10 text-center text-slate-500">Database empty (будет наполняться от Smart Import).</td></tr>
-              )}
             </tbody>
           </table>
         </div>
       </div>
     </div>
   );
-
-  const RawDataView = () => {
-    const isSheet = activeTab === "sheet";
-    const missing = model.derivedAccounts.filter((a: any) => !String(a.password || "").trim());
-    const rows = model.derivedAccounts
-      .filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true))
-      .filter((a: any) => (rawOnlyMissing ? !String(a.password || "").trim() : true));
-    const cancelled = model.statusCounts.Cancelled || 0;
-    const other = (model.statusCounts.Pending || 0) + (model.statusCounts.Confirmed || 0) + (model.statusCounts.Completed || 0);
-    const duplicateMap = useMemo(() => {
-      const map = new Map<string, any[]>();
-      for (const a of state.database) {
-        const key = safeLower(a.email);
-        if (!map.has(key)) map.set(key, []);
-        map.get(key)!.push(a);
-      }
-      return map;
-    }, [state.database]);
-
-    const copyMissingEmails = async () => {
-      const payload = missing.map((a: any) => a.email).join("\n");
-      await copyToClipboard(payload);
-      pushToast("ok", "Copied", `${missing.length} emails without passwords.`);
-    };
-
-    return (
-      <div className="space-y-6">
-        <div className={`${theme.panel} rounded-2xl p-6`}>
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-bold text-slate-900 text-lg">Bookings Status (Cancelled vs Other)</h3>
-            <div className="text-xs text-slate-500">{cancelled + other} total</div>
-          </div>
-          <div className="h-56 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={[{ name: "Bookings", cancelled, other }]}
-                margin={{ left: 0, right: 12 }}
-                barSize={36}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
-                <XAxis dataKey="name" stroke={theme.axis} axisLine={false} tickLine={false} />
-                <YAxis stroke={theme.axis} axisLine={false} tickLine={false} />
-                <RechartsTooltip contentStyle={theme.tooltip} />
-                <Bar dataKey="other" stackId="a" fill="#3B82F6" radius={[6, 6, 0, 0]} />
-                <Bar dataKey="cancelled" stackId="a" fill="#EF4444" radius={[6, 6, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className={`${theme.panel} rounded-2xl p-6`}>
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-indigo-500/20 rounded-lg text-indigo-400">
-                <Sheet size={20} />
-              </div>
-              <div>
-                <h3 className="font-bold text-slate-900 text-lg">
-                  Dashboard — RawData (accounts: email + password)
-                </h3>
-                <p className="text-xs text-slate-500">
-                  Вставляй сюда все аккаунты: <span className="font-mono">email&lt;TAB&gt;password</span>. Пароли автоматически обновятся во всех бордах.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <label className="text-xs text-slate-500 flex items-center gap-2">
-                <input type="checkbox" checked={rawOnlyMissing} onChange={(e) => setRawOnlyMissing((e.target as HTMLInputElement).checked)} />
-                show emails without passwords
-              </label>
-              <button
-                onClick={() => {
-                  setState((prev: any) => {
-                    const seen = new Set<string>();
-                    const nextDb = [];
-                    for (const row of prev.database) {
-                      const key = safeLower(row.email);
-                      if (seen.has(key)) continue;
-                      seen.add(key);
-                      nextDb.push(row);
-                    }
-                    return { ...prev, database: nextDb };
-                  });
-                  pushToast("ok", "Duplicates removed", "Kept the first entry per email.");
-                }}
-                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-xs font-bold"
-              >
-                Delete duplicates
-              </button>
-              <button
-                onClick={copyMissingEmails}
-                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-xs font-bold"
-              >
-                Copy missing emails ({missing.length})
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-4">
-            <textarea
-              className="w-full bg-white border border-slate-200 rounded-xl p-4 text-xs font-mono text-slate-700 focus:border-indigo-500 outline-none min-h-[120px]"
-              placeholder={"PASTE HERE (tab-separated from Google):\nemail1@example.com\tpassword1\nemail2@example.com\tpassword2"}
-              onPaste={(e) => {
-                e.preventDefault();
-                const text = e.clipboardData.getData("text/plain");
-                ingestRawAccounts(text);
-              }}
-              onKeyDown={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                  const t = (e.currentTarget as HTMLTextAreaElement).value;
-                  if (t && t.trim()) ingestRawAccounts(t);
-                  (e.currentTarget as HTMLTextAreaElement).value = "";
-                }
-              }}
-            />
-            <div className="mt-3 text-xs text-slate-500 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <RefreshCw size={14} />
-                <span>Paste = upsert passwords + create missing accounts.</span>
-              </div>
-              {state.lastRawImport ? (
-                <div className="text-slate-500">
-                  Last raw import: <b className="text-slate-700">{new Date(state.lastRawImport.at).toLocaleString()}</b> • Rows{" "}
-                  <b className="text-slate-700">{state.lastRawImport.rows}</b> • Updated{" "}
-                  <b className="text-slate-700">{state.lastRawImport.updated}</b> • Created{" "}
-                  <b className="text-slate-700">{state.lastRawImport.created}</b> • Errors{" "}
-                  <b className="text-amber-300">{state.lastRawImport.errors}</b>
-                </div>
-              ) : (
-                <div />
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
-          <div className="p-4 border-b border-slate-200 font-bold text-slate-900 flex justify-between items-center">
-            <span>RawData — Accounts</span>
-            <span className="text-slate-500 text-sm font-normal">{rows.length} rows</span>
-          </div>
-
-          <div className="overflow-x-auto max-h-[72vh]">
-            <table className="w-full text-left text-sm text-slate-500">
-              <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
-                <tr>
-                  <th className="px-6 py-4">Email</th>
-                  <th className="px-6 py-4">Password</th>
-                  <th className="px-6 py-4">Duplicate</th>
-                  <th className="px-6 py-4">Status</th>
-                  <th className="px-6 py-4">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {rows.map((a: any) => {
-                  const missingPass = !String(a.password || "").trim();
-                  const duplicates = duplicateMap.get(a.emailKey) || [];
-                  const isDup = duplicates.length > 1;
-                  const hasDifferentPass = isDup && new Set(duplicates.map((d) => String(d.password || ""))).size > 1;
-                  return (
-                    <tr key={a.emailKey} className={`hover:bg-slate-50 ${missingPass ? "bg-rose-500/5" : ""}`}>
-                      <td className="px-6 py-4">
-                        <div className="text-slate-900 font-semibold">{a.email}</div>
-                      </td>
-                      <td className="px-6 py-4 font-mono text-xs text-slate-700">
-                        <input
-                          value={a.password || ""}
-                          onChange={(e) => upsertDatabaseRow(a.email, { password: e.target.value })}
-                          className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-48"
-                          placeholder="password"
-                        />
-                      </td>
-                      <td className="px-6 py-4 text-xs">
-                        {isDup ? (
-                          <span className={`px-2 py-1 rounded-full border ${hasDifferentPass ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
-                            {hasDifferentPass ? "DUPLICATE (diff pass)" : "DUPLICATE"}
-                          </span>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4">
-                        {missingPass ? <Badge themeMode={themeMode} kind="block">NO PASS</Badge> : <Badge themeMode={themeMode} kind="active">OK</Badge>}
-                      </td>
-                      <td className="px-6 py-4 text-xs">
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => pushToast("ok", "Saved", "Password updated.")}
-                            className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
-                          >
-                            Save
-                          </button>
-                          {isDup && (
-                            <>
-                              <button
-                                onClick={() => {
-                                  setState((prev: any) => ({
-                                    ...prev,
-                                    database: prev.database.filter((d: any, idx: number) => {
-                                      if (safeLower(d.email) !== a.emailKey) return true;
-                                      return idx === prev.database.findIndex((x: any) => safeLower(x.email) === a.emailKey);
-                                    }),
-                                  }));
-                                }}
-                                className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
-                              >
-                                Keep First
-                              </button>
-                              <button
-                                onClick={() => {
-                                  setState((prev: any) => ({
-                                    ...prev,
-                                    database: prev.database.filter((d: any) => {
-                                      if (safeLower(d.email) !== a.emailKey) return true;
-                                      return String(d.password || "").trim() === String(a.password || "").trim();
-                                    }),
-                                  }));
-                                }}
-                                className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
-                              >
-                                Keep This
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {rows.length === 0 && (
-                  <tr><td colSpan={6} className="px-6 py-10 text-center text-slate-500">No rows.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const HotelsView = () => (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-900">Hotels</h2>
-          <p className="text-xs text-slate-500">Отели создаются автоматически из Smart Import. TECH block: cancelled ≥ {state.settings.hotelTechBlockTotal}.</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              setHotelTopRatedOnly(true);
-              setHotelCancelledMax("0");
-            }}
-            className="px-3 py-2 rounded-xl border border-emerald-200 text-emerald-600 text-xs font-bold hover:bg-emerald-50"
-          >
-            Top Rated
-          </button>
-          <button
-            onClick={() => downloadCSV("hotels.csv", state.hotels)}
-            className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-sm font-bold inline-flex items-center gap-2"
-          >
-            <Download size={16} /> Export
-          </button>
-        </div>
-      </div>
-
-      <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
-        <div className="p-4 border-b border-slate-200 flex flex-wrap gap-3 items-center justify-between text-xs text-slate-500">
-          <div className="flex items-center gap-2">
-            <span>Min Confirmed</span>
-            <input
-              value={hotelConfirmedMin}
-              onChange={(e) => setHotelConfirmedMin((e.target as HTMLInputElement).value)}
-              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <span>Max Cancelled</span>
-            <input
-              value={hotelCancelledMax}
-              onChange={(e) => setHotelCancelledMax((e.target as HTMLInputElement).value)}
-              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
-            />
-          </div>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={hotelTopRatedOnly}
-              onChange={(e) => setHotelTopRatedOnly((e.target as HTMLInputElement).checked)}
-            />
-            only 0 cancellations
-          </label>
-        </div>
-        <div className="overflow-x-auto max-h-[75vh]">
-          <table className="w-full text-left text-sm text-slate-500">
-            <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
-              <tr>
-                <th className="px-6 py-4">Hotel</th>
-                <th className="px-6 py-4">Status</th>
-                <th className="px-6 py-4">Stats</th>
-                <th className="px-6 py-4">Spent</th>
-                <th className="px-6 py-4">Notes</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              {model.derivedHotels
-                .filter((h: any) =>
-                  searchTerm
-                    ? safeLower(h.name).includes(safeLower(searchTerm)) || String(h.hotelId).includes(searchTerm)
-                    : true
-                )
-                .filter((h: any) => {
-                  const minConfirmed = hotelConfirmedMin ? Number(hotelConfirmedMin) : null;
-                  const maxCancelled = hotelCancelledMax ? Number(hotelCancelledMax) : null;
-                  if (minConfirmed !== null && !Number.isNaN(minConfirmed) && (h.confirmed || 0) < minConfirmed) return false;
-                  if (maxCancelled !== null && !Number.isNaN(maxCancelled) && (h.cancelled || 0) > maxCancelled) return false;
-                  if (hotelTopRatedOnly && (h.cancelled || 0) > 0) return false;
-                  return true;
-                })
-                .sort((a: any, b: any) => b.totalBookings - a.totalBookings)
-                .map((h: any) => (
-                  <tr key={h.hotelId} className="hover:bg-slate-50">
-                    <td className="px-6 py-4">
-                      <div className="text-slate-900 font-bold">{h.name}</div>
-                      <div className="text-xs text-slate-500 font-mono">{h.hotelId}</div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex flex-wrap gap-2">
-                        {!h.isBlocked ? <Badge themeMode={themeMode} kind="active">OK</Badge> : <Badge themeMode={themeMode} kind="block">BLOCK</Badge>}
-                        {h.techBlocked && <Badge themeMode={themeMode} kind="tech">TECH</Badge>}
-                        {h.manualBlocked && <Badge themeMode={themeMode} kind="block">MANUAL</Badge>}
-                      </div>
-                      {h.blockReason && <div className="mt-2 text-xs text-rose-300">{h.blockReason}</div>}
-                    </td>
-                    <td className="px-6 py-4 text-xs text-slate-600">
-                      <div className="flex justify-between"><span className="text-slate-500">Total</span><span className="font-bold">{h.totalBookings}</span></div>
-                      <div className="flex justify-between"><span className="text-slate-500">Confirmed</span><span>{h.confirmed}</span></div>
-                      <div className="flex justify-between"><span className="text-slate-500">Cancelled</span><span>{h.cancelled}</span></div>
-                    </td>
-                    <td className="px-6 py-4 text-xs font-mono text-slate-700">{money(h.spent || 0)}</td>
-                    <td className="px-6 py-4">
-                      <input
-                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-full text-xs"
-                        value={h.notes || ""}
-                        onChange={(e) => {
-                          const notes = e.target.value;
-                          setState((prev: any) => {
-                            const next = { ...prev, hotels: [...prev.hotels] };
-                            const idx = next.hotels.findIndex((x: any) => x.hotelId === h.hotelId);
-                            if (idx >= 0) next.hotels[idx] = { ...next.hotels[idx], notes };
-                            return next;
-                          });
-                        }}
-                        placeholder="notes"
-                      />
-                    </td>
-                  </tr>
-                ))}
-              {model.derivedHotels.length === 0 && (
-                <tr><td colSpan={4} className="px-6 py-10 text-center text-slate-500">Hotels empty (будет наполняться от Smart Import).</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-
-  const SpentView = () => {
-    const [form, setForm] = useState({ date: todayISO(), email: "", amount: "", note: "" });
-    const [amountFilter, setAmountFilter] = useState("");
-    const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-
-    const addSpent = () => {
-      if (!isISODateLike(form.date) || !form.email || !form.email.includes("@") || !isNumericLike(form.amount)) {
-        pushToast("warn", "Invalid spend entry", "Use date/email/amount.");
-        return;
-      }
-      setState((prev: any) => {
-        const next = { ...prev, sales: [...prev.sales], audit: [...(prev.audit || [])] };
-        next.sales.push({
-          id: uid(),
-          date: form.date,
-          email: safeLower(form.email),
-          amount: parseMoney(form.amount),
-          note: form.note || "",
-        });
-        next.audit.push({ id: uid(), at: nowISO(), type: "SPENT_ADD", msg: `Spent added: ${form.email} / ${form.amount}` });
-        next.audit = next.audit.slice(-400);
-        return next;
-      });
-      setForm({ date: todayISO(), email: "", amount: "", note: "" });
-      pushToast("ok", "Spent added");
-    };
-
-    const ingestSpent = (text: string) => {
-      let summary: any = null;
-      setState((prev: any) => {
-        const { rows, errors } = parseSpentPaste(text);
-        const next = { ...prev, sales: [...prev.sales], audit: [...(prev.audit || [])] };
-        const now = nowISO();
-        let added = 0;
-        for (const r of rows) {
-          next.sales.push({ id: uid(), date: r.date, email: r.email, amount: r.amount, note: r.note });
-          added += 1;
-          next.audit.push({ id: uid(), at: now, type: "SPENT_ADD", msg: `Spent added: ${r.email} / ${r.amount}` });
-        }
-        for (const e of errors) {
-          next.audit.push({ id: uid(), at: now, type: "SPENT_PARSE_ERROR", msg: `Spent parse error line ${e.line}: ${e.raw}` });
-        }
-        next.audit = next.audit.slice(-400);
-        summary = { added, errors: errors.length };
-        return next;
-      });
-      if (summary) {
-        pushToast(summary.errors ? "warn" : "ok", "Spent import", `Added ${summary.added}. Errors ${summary.errors}.`);
-      }
-    };
-
-    const minAmount = amountFilter ? Number(amountFilter) : null;
-    const rows = [...state.sales]
-      .filter((s: any) => (minAmount === null || Number.isNaN(minAmount) ? true : Number(s.amount || 0) >= minAmount))
-      .sort((a: any, b: any) => {
-        const diff = Number(a.amount || 0) - Number(b.amount || 0);
-        return sortDir === "asc" ? diff : -diff;
-      });
-
-    return (
-      <div className="space-y-6">
-        <div className={`${theme.panel} rounded-2xl p-6 space-y-4`}>
-          <div>
-            <h3 className="font-bold text-slate-900 text-lg">Dashboard — Spent</h3>
-            <p className="text-xs text-slate-500">Добавляй траты: дата, email, сумма, заметка.</p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-            <input
-              type="date"
-              value={form.date}
-              onChange={(e) => setForm((p) => ({ ...p, date: (e.target as HTMLInputElement).value }))}
-              className="bg-white border border-slate-200 rounded px-3 py-2 text-slate-700 text-xs"
-            />
-            <input
-              value={form.email}
-              onChange={(e) => setForm((p) => ({ ...p, email: (e.target as HTMLInputElement).value }))}
-              placeholder="email"
-              className="bg-white border border-slate-200 rounded px-3 py-2 text-slate-700 text-xs"
-            />
-            <input
-              value={form.amount}
-              onChange={(e) => setForm((p) => ({ ...p, amount: (e.target as HTMLInputElement).value }))}
-              placeholder="amount"
-              className="bg-white border border-slate-200 rounded px-3 py-2 text-slate-700 text-xs"
-            />
-            <input
-              value={form.note}
-              onChange={(e) => setForm((p) => ({ ...p, note: (e.target as HTMLInputElement).value }))}
-              placeholder="note"
-              className="bg-white border border-slate-200 rounded px-3 py-2 text-slate-700 text-xs"
-            />
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={addSpent}
-              className="px-4 py-2 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-bold"
-            >
-              Add Spent
-            </button>
-            <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
-              <span>Min amount</span>
-              <input
-                value={amountFilter}
-                onChange={(e) => setAmountFilter((e.target as HTMLInputElement).value)}
-                placeholder="0"
-                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-24"
-              />
-              <button
-                onClick={() => setSortDir(sortDir === "asc" ? "desc" : "asc")}
-                className="px-3 py-1 rounded-lg border border-slate-200 text-slate-600"
-              >
-                Sort {sortDir === "asc" ? "▲" : "▼"}
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <textarea
-              className="w-full bg-white border border-slate-200 rounded-xl p-4 text-xs font-mono text-slate-700 focus:border-amber-500 outline-none min-h-[120px]"
-              placeholder={"PASTE HERE (tab-separated):\n2025-03-01\temail@example.com\t25\tTaxi"}
-              onPaste={(e) => {
-                e.preventDefault();
-                const text = e.clipboardData.getData("text/plain");
-                ingestSpent(text);
-              }}
-              onKeyDown={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                  const t = (e.currentTarget as HTMLTextAreaElement).value;
-                  if (t && t.trim()) ingestSpent(t);
-                  (e.currentTarget as HTMLTextAreaElement).value = "";
-                }
-              }}
-            />
-          </div>
-        </div>
-
-        <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
-          <div className="p-4 border-b border-slate-200 font-bold text-slate-900 flex justify-between items-center">
-            <span>Spent — Log</span>
-            <span className="text-slate-500 text-sm font-normal">{rows.length} rows</span>
-          </div>
-          <div className="overflow-x-auto max-h-[70vh]">
-            <table className="w-full text-left text-sm text-slate-500">
-              <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
-                <tr>
-                  <th className="px-6 py-4">Date</th>
-                  <th className="px-6 py-4">Email</th>
-                  <th className="px-6 py-4">Amount</th>
-                  <th className="px-6 py-4">Note</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {rows.map((s: any) => (
-                  <tr key={s.id} className="hover:bg-slate-50">
-                    <td className="px-6 py-4">
-                      <input
-                        type="date"
-                        value={s.date || ""}
-                        onChange={(e) => {
-                          const date = (e.target as HTMLInputElement).value;
-                          setState((prev: any) => {
-                            const next = { ...prev, sales: [...prev.sales] };
-                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
-                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], date };
-                            return next;
-                          });
-                        }}
-                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs"
-                      />
-                    </td>
-                    <td className="px-6 py-4">
-                      <input
-                        value={s.email || ""}
-                        onChange={(e) => {
-                          const email = safeLower((e.target as HTMLInputElement).value);
-                          setState((prev: any) => {
-                            const next = { ...prev, sales: [...prev.sales] };
-                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
-                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], email };
-                            return next;
-                          });
-                        }}
-                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-52"
-                      />
-                    </td>
-                    <td className="px-6 py-4">
-                      <input
-                        value={s.amount ?? ""}
-                        onChange={(e) => {
-                          const amount = parseMoney((e.target as HTMLInputElement).value);
-                          setState((prev: any) => {
-                            const next = { ...prev, sales: [...prev.sales] };
-                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
-                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], amount };
-                            return next;
-                          });
-                        }}
-                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-24"
-                      />
-                    </td>
-                    <td className="px-6 py-4">
-                      <input
-                        value={s.note || ""}
-                        onChange={(e) => {
-                          const note = (e.target as HTMLInputElement).value;
-                          setState((prev: any) => {
-                            const next = { ...prev, sales: [...prev.sales] };
-                            const idx = next.sales.findIndex((x: any) => x.id === s.id);
-                            if (idx >= 0) next.sales[idx] = { ...next.sales[idx], note };
-                            return next;
-                          });
-                        }}
-                        className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-full"
-                      />
-                    </td>
-                  </tr>
-                ))}
-                {rows.length === 0 && (
-                  <tr>
-                    <td colSpan={4} className="px-6 py-10 text-center text-slate-500">No spent entries yet.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    );
   };
 
   const BookingsView = () => {
-    const accountByEmail = new Map(model.derivedAccounts.map((a: any) => [a.emailKey, a]));
-    const sortBookingValue = (b: any) => {
-      switch (bookingSortKey) {
-        case "checkIn":
-          return parseDate(b.checkIn)?.getTime() || 0;
-        case "checkOut":
-          return parseDate(b.checkOut)?.getTime() || 0;
-        case "cost":
-          return Number(b.cost || 0);
-        case "rewardAmount":
-          return Number(b.rewardAmount || 0);
-        case "status":
-          return String(b.status || "");
-        case "createdAt":
-        default:
-          return parseDate(b.createdAt)?.getTime() || 0;
-      }
-    };
-    const filtered = [...state.bookings]
-      .filter((b: any) => {
-        if (!searchTerm) return true;
-        const q = safeLower(searchTerm);
-        return (
-          safeLower(b.email).includes(q) ||
-          String(b.bookingNo || "").toLowerCase().includes(q) ||
-          safeLower(b.hotelNameSnapshot || "").includes(q) ||
-          String(b.hotelId || "").toLowerCase().includes(q)
-        );
-      })
-      .filter((b: any) => (bookingStatusFilter === "ALL" ? true : b.status === bookingStatusFilter))
-      .filter((b: any) =>
-        bookingTypeFilter === "ALL"
-          ? true
-          : normalizeRewardType(b.rewardType, getRewardTypes(state.settings)) === bookingTypeFilter
-      )
-      .filter((b: any) => (bookingMissingPaidFilter ? !String(b.rewardPaidOn || "").trim() : true))
-      .filter((b: any) => {
-        if (!bookingMissingPasswordFilter) return true;
-        const account = accountByEmail.get(safeLower(b.email));
-        return !String(account?.password || "").trim();
-      })
-      .sort((a: any, b: any) => {
-        const aVal = sortBookingValue(a);
-        const bVal = sortBookingValue(b);
-        if (typeof aVal === "string" || typeof bVal === "string") {
-          const diff = String(aVal).localeCompare(String(bVal));
-          return bookingSortDir === "asc" ? diff : -diff;
-        }
-        const diff = Number(aVal) - Number(bVal);
-        return bookingSortDir === "asc" ? diff : -diff;
-      });
-
+    const filter = tableFilters.bookings;
+    const sort = tableSorts.bookings;
+    const filtered = state.bookings.filter((b: any) => {
+      if (!filter) return true;
+      const haystack = `${b.email} ${b.bookingNo} ${b.hotelNameSnapshot} ${b.status}`.toLowerCase();
+      return haystack.includes(filter.toLowerCase());
+    });
+    const rows = sortRows(filtered, sort.key, sort.dir);
     return (
-      <div className="space-y-6">
-        {/* SMART IMPORT — SINGLE ENTRY POINT */}
-        <div className={`${theme.panel} rounded-2xl p-6`}>
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-500/20 rounded-lg text-blue-400">
-                <ClipboardList size={20} />
-              </div>
-              <div>
-                <h3 className="font-bold text-slate-900 text-lg">Bookings — Smart Import (paste = commit)</h3>
-                <p className="text-xs text-slate-500">
-                  Вставляешь строки из Google Sheets → они сразу попадают в лог, создают Account/Hotel при необходимости и запускают перерасчёт.
-                </p>
-              </div>
+        <div className="space-y-6">
+            <div className="bg-[#111111] border border-[#333333] rounded-sm p-6 relative group overflow-hidden">
+                 <div className="absolute top-0 right-0 p-6 opacity-5 group-hover:opacity-10 transition-opacity pointer-events-none">
+                     <Terminal size={100} />
+                 </div>
+                <div className="flex items-center justify-between mb-4 relative z-10">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 bg-blue-500/10 text-blue-400 rounded-sm border border-blue-500/20">
+                            <ClipboardList size={20} />
+                        </div>
+                        <div>
+                            <h3 className="text-white font-bold uppercase tracking-wider">Smart Import</h3>
+                            <p className="text-xs text-zinc-500">Paste Google Sheets Rows (Tab Separated)</p>
+                        </div>
+                    </div>
+                    <div className="flex gap-2">
+                        <div className="px-3 py-1 bg-[#222] rounded-sm text-[10px] text-zinc-400 font-mono flex items-center gap-2 border border-[#333]">
+                            <span>AUTO-CREATE:</span>
+                            <span className={state.settings.autoCreateFromImport ? "text-green-400" : "text-zinc-600"}>{state.settings.autoCreateFromImport ? "ON" : "OFF"}</span>
+                        </div>
+                    </div>
+                </div>
+                <textarea className="w-full bg-[#050505] border border-[#333] rounded-sm p-4 text-xs font-mono text-zinc-300 focus:border-blue-500 outline-none min-h-[120px] transition-colors custom-scrollbar relative z-10"
+                    placeholder="PASTE DATA HERE..." onPaste={(e) => { e.preventDefault(); const text = e.clipboardData.getData("text/plain"); ingestFromPaste(text); }} />
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => downloadCSV("bookings.csv", state.bookings)}
-                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-sm font-bold inline-flex items-center gap-2"
-              >
-                <Download size={16} /> Export
-              </button>
-              <button
-                onClick={() => setAuditOpen(true)}
-                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-900 text-sm font-bold inline-flex items-center gap-2"
-              >
-                <History size={16} /> Audit
-              </button>
+            <div className="border border-[#333333] bg-[#111111] rounded-sm overflow-hidden">
+                <div className="px-6 py-3 border-b border-[#333] flex flex-wrap gap-3 justify-between items-center bg-[#1A1A1A]">
+                    <div className="flex items-center gap-4">
+                        <div className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Bookings Log</div>
+                        <div className="text-xs text-zinc-600 font-mono">{rows.length} entries</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={filter}
+                        onChange={(e) => setTableFilters((prev) => ({ ...prev, bookings: e.target.value }))}
+                        placeholder="Filter bookings"
+                        className="bg-[#0A0A0A] border border-[#333] rounded-sm px-3 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-[#F40009] outline-none"
+                      />
+                      <select
+                        value={`${sort.key}:${sort.dir}`}
+                        onChange={(e) => {
+                          const [key, dir] = e.target.value.split(":");
+                          setTableSorts((prev) => ({ ...prev, bookings: { key, dir: dir as "asc" | "desc" } }));
+                        }}
+                        className="bg-[#0A0A0A] border border-[#333] rounded-sm px-2 py-1.5 text-xs text-white"
+                      >
+                        <option value="createdAt:desc">Newest</option>
+                        <option value="createdAt:asc">Oldest</option>
+                        <option value="cost:desc">Cost ↓</option>
+                        <option value="cost:asc">Cost ↑</option>
+                        <option value="rewardAmount:desc">Reward ↓</option>
+                        <option value="rewardAmount:asc">Reward ↑</option>
+                      </select>
+                      <button onClick={() => setEditMode(!editMode)} className={`flex items-center gap-2 px-3 py-1 rounded-sm text-[10px] font-bold uppercase border transition-all ${editMode ? "bg-[#F40009] border-[#F40009] text-white" : "bg-transparent border-[#333] text-zinc-500 hover:text-white"}`}>
+                          <Edit3 size={12} /> {editMode ? "Edit Mode ON" : "Edit Mode OFF"}
+                      </button>
+                    </div>
+                </div>
+                <div className="overflow-x-auto max-h-[65vh]">
+                    <table className="w-full text-left text-sm text-zinc-400">
+                        <thead className="bg-[#151515] text-[10px] uppercase font-bold text-zinc-500 sticky top-0 z-10 tracking-widest">
+                            <tr>
+                                <th className="px-6 py-3">Date</th>
+                                <th className="px-6 py-3">Account Context</th>
+                                <th className="px-6 py-3">Hotel & Stay</th>
+                                <th className="px-6 py-3">Financials</th>
+                                <th className="px-6 py-3">Status</th>
+                                <th className="px-6 py-3 text-right">Reward Intel</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#222]">
+                            {rows.map((b: any) => {
+                                const acc = model.derivedAccounts.find((a: any) => a.emailKey === safeLower(b.email));
+                                const showPass = visiblePasswords[b.bookingId];
+                                const eta = computeRewardETA(b, state.settings);
+                                return (
+                                <tr key={b.bookingId} className="hover:bg-[#1A1A1A] transition-colors">
+                                    <td className="px-6 py-3 text-xs font-mono text-zinc-500 align-top">{b.createdAt}</td>
+                                    <td className="px-6 py-3 align-top">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <div className="text-white text-xs font-bold">{b.email}</div>
+                                            <button onClick={() => togglePassword(b.bookingId)} className="text-zinc-500 hover:text-white transition-colors">
+                                                {showPass ? <EyeOff size={12}/> : <Eye size={12}/>}
+                                            </button>
+                                        </div>
+                                        {showPass && <div className="text-[10px] font-mono text-[#F40009] mb-1 bg-[#111] border border-[#333] px-2 py-0.5 rounded w-fit">{acc?.password || "NO_PASS"}</div>}
+                                        <div className="text-[10px] text-zinc-500 font-mono flex items-center gap-2">
+                                            <span>ID: {b.bookingNo}</span>
+                                            <span className="text-zinc-700">|</span>
+                                            <span>PIN: {b.pin}</span>
+                                        </div>
+                                        <div className="text-[10px] text-zinc-400 font-mono mt-0.5">{b.level}</div>
+                                    </td>
+                                    <td className="px-6 py-3 align-top">
+                                        <div className="text-zinc-300 text-xs truncate max-w-[150px] font-bold">{b.hotelNameSnapshot}</div>
+                                        <div className="text-[10px] text-zinc-600 font-mono mb-1">ID: {b.hotelId}</div>
+                                        <div className="flex items-center gap-1 text-[10px] text-zinc-500 font-mono">
+                                            <Calendar size={10} /> {b.checkIn} → {b.checkOut}
+                                        </div>
+                                    </td>
+                                    <td className="px-6 py-3 align-top">
+                                        <div className="text-xs text-white mb-1 flex justify-between w-24">
+                                            <span className="text-zinc-500">Spent:</span>
+                                            {editMode ? (
+                                                <input className="w-12 bg-[#000] border border-[#333] text-zinc-300 px-1 text-right text-[10px]" value={b.cost} onChange={(e) => upsertBookingRow(b.bookingId, {cost: Number(e.target.value)})} />
+                                            ) : (
+                                                <span className="font-mono">{money(b.cost)}</span>
+                                            )}
+                                        </div>
+                                        {b.promoCode && <div className="text-[10px] text-green-500 font-mono">PROMO: {b.promoCode}</div>}
+                                    </td>
+                                    <td className="px-6 py-3 align-top">
+                                        {editMode ? (
+                                            <select className="bg-[#000] border border-[#333] text-zinc-300 text-xs p-1" value={b.status} onChange={(e) => upsertBookingRow(b.bookingId, {status: e.target.value})}>
+                                                {Array.from(KNOWN_STATUS).map(s => <option key={s} value={s.charAt(0).toUpperCase() + s.slice(1)}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+                                            </select>
+                                        ) : (
+                                            b.status === "Confirmed" ? <Badge kind="active">CNF</Badge> : b.status === "Cancelled" ? <Badge kind="cancelled">CXL</Badge> : <Badge>{b.status.substring(0,4).toUpperCase()}</Badge>
+                                        )}
+                                    </td>
+                                    <td className="px-6 py-3 text-right align-top">
+                                        <div className="flex flex-col items-end">
+                                            <div className="text-xs text-white font-bold mb-0.5">
+                                                {editMode ? (
+                                                    <input className="w-16 bg-[#000] border border-[#333] text-white px-1 text-right" value={b.rewardAmount} onChange={(e) => upsertBookingRow(b.bookingId, {rewardAmount: Number(e.target.value)})} />
+                                                ) : (
+                                                    b.rewardAmount ? money(b.rewardAmount) : "—"
+                                                )}
+                                            </div>
+                                            <div className="text-[10px] text-zinc-500 font-mono mb-0.5">{b.rewardType} {b.airline && `(${b.airline})`}</div>
+                                            <div className={`text-[10px] font-mono ${b.rewardPaidOn ? "text-green-500" : "text-zinc-600"}`}>
+                                                {b.rewardPaidOn ? `PAID: ${b.rewardPaidOn}` : `ETA: ${eta}`}
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            );})}
+                        </tbody>
+                    </table>
+                </div>
             </div>
+        </div>
+    );
+  };
+
+  const RawDataView = () => (
+      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 h-[75vh]">
+          {/* Accounts Panel */}
+          <div className="flex flex-col border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+              <div className="p-4 border-b border-[#333] flex justify-between items-center bg-[#1A1A1A]">
+                   <div className="flex items-center gap-2">
+                       <Database size={16} className="text-zinc-500" />
+                       <span className="text-xs font-bold text-white uppercase tracking-widest">Accounts Import</span>
+                   </div>
+                   <div className="text-[10px] text-zinc-500 font-mono">FORMAT: EMAIL \t PASSWORD</div>
+              </div>
+              <textarea 
+                value={rawAccountsInput} onChange={(e) => setRawAccountsInput(e.target.value)}
+                className="flex-1 bg-[#0A0A0A] p-4 text-xs font-mono text-zinc-300 outline-none resize-none focus:bg-black transition-colors custom-scrollbar"
+                placeholder={`user@example.com\tpassword123\nuser2@example.com\tpass456`}
+              />
+              <div className="p-4 border-t border-[#333] bg-[#1A1A1A]">
+                  <button onClick={handleRawAccountsImport} className="w-full py-2 bg-[#222] hover:bg-[#F40009] text-white text-xs font-bold uppercase tracking-widest rounded-sm border border-[#333] hover:border-[#F40009] transition-all flex items-center justify-center gap-2 group">
+                      <Save size={14} className="group-hover:scale-110 transition-transform" /> Execute Import
+                  </button>
+              </div>
           </div>
 
-          <div className="mt-4">
-            <textarea
-              className="w-full bg-white border border-slate-200 rounded-xl p-4 text-xs font-mono text-slate-700 focus:border-blue-500 outline-none min-h-[120px]"
-              placeholder={`PASTE HERE (tab-separated from Google):\n2025-12-15\tr...@gmx.com\t5051780387\t6635\t\tHyatt Regency...\t6,066.89\t2026-03-12\t2026-03-13\t120.00\tconfirmed\tGenius Level 1`}
-              onPaste={(e) => {
-                e.preventDefault();
-                const text = e.clipboardData.getData("text/plain");
-                ingestFromPaste(text);
-              }}
-              onKeyDown={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                  const t = (e.currentTarget as HTMLTextAreaElement).value;
-                  if (t && t.trim()) ingestFromPaste(t);
-                  (e.currentTarget as HTMLTextAreaElement).value = "";
-                }
-              }}
-            />
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-              <div className="flex items-center gap-2">
-                <RefreshCw size={14} />
-                <span>
-                  Auto-create Accounts/Hotels: <b className="text-slate-600">{state.settings.autoCreateFromImport ? "ON" : "OFF"}</b> • Auto-write TECH blocks:{" "}
-                  <b className="text-slate-600">{state.settings.autoWriteTechBlocks ? "ON" : "OFF"}</b>
-                </span>
+          {/* Sales Panel */}
+          <div className="flex flex-col border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+              <div className="p-4 border-b border-[#333] flex justify-between items-center bg-[#1A1A1A]">
+                   <div className="flex items-center gap-2">
+                       <CreditCard size={16} className="text-zinc-500" />
+                       <span className="text-xs font-bold text-white uppercase tracking-widest">Sales Import</span>
+                   </div>
+                   <div className="text-[10px] text-zinc-500 font-mono">FORMAT: DATE \t EMAIL \t AMT \t NOTE</div>
               </div>
-              {state.lastImport ? (
-                <div className="text-slate-500">
-                  Last import: <b className="text-slate-700">{new Date(state.lastImport.at).toLocaleString()}</b> • Added{" "}
-                  <b className="text-slate-700">{state.lastImport.added}</b> • New Acc{" "}
-                  <b className="text-slate-700">{state.lastImport.accCreated}</b> • New Hotels{" "}
-                  <b className="text-slate-700">{state.lastImport.hotelCreated}</b> • Dup{" "}
-                  <b className="text-slate-700">{state.lastImport.dupSkipped}</b> • Errors{" "}
-                  <b className="text-amber-300">{state.lastImport.errors}</b>
+              <textarea 
+                value={rawSpentInput} onChange={(e) => setRawSpentInput(e.target.value)}
+                className="flex-1 bg-[#0A0A0A] p-4 text-xs font-mono text-zinc-300 outline-none resize-none focus:bg-black transition-colors custom-scrollbar"
+                placeholder={`2025-02-10\tuser@example.com\t15\tTaxi\n2025-02-12\tuser2@example.com\t50\tFlight`}
+              />
+              <div className="p-4 border-t border-[#333] bg-[#1A1A1A]">
+                  <button onClick={handleRawSpentImport} className="w-full py-2 bg-[#222] hover:bg-[#F40009] text-white text-xs font-bold uppercase tracking-widest rounded-sm border border-[#333] hover:border-[#F40009] transition-all flex items-center justify-center gap-2 group">
+                      <Save size={14} className="group-hover:scale-110 transition-transform" /> Execute Import
+                  </button>
+              </div>
+          </div>
+
+          {/* Mass Block Panel */}
+          <div className="flex flex-col border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+              <div className="p-4 border-b border-[#333] flex justify-between items-center bg-[#1A1A1A]">
+                   <div className="flex items-center gap-2">
+                       <ShieldAlert size={16} className="text-[#F40009]" />
+                       <span className="text-xs font-bold text-white uppercase tracking-widest">Mass Block</span>
+                   </div>
+                   <div className="text-[10px] text-zinc-500 font-mono">FORMAT: EMAIL_ONLY</div>
+              </div>
+              <textarea 
+                value={rawBlockedInput} onChange={(e) => setRawBlockedInput(e.target.value)}
+                className="flex-1 bg-[#0A0A0A] p-4 text-xs font-mono text-zinc-300 outline-none resize-none focus:bg-black transition-colors custom-scrollbar"
+                placeholder={`bad_actor@example.com\nfraudster@test.com`}
+              />
+              <div className="p-4 border-t border-[#333] bg-[#1A1A1A]">
+                  <button onClick={handleRawBlockedImport} className="w-full py-2 bg-[#222] hover:bg-[#F40009] text-white text-xs font-bold uppercase tracking-widest rounded-sm border border-[#333] hover:border-[#F40009] transition-all flex items-center justify-center gap-2 group">
+                      <Ban size={14} className="group-hover:scale-110 transition-transform" /> Block Emails
+                  </button>
+              </div>
+          </div>
+
+          {/* Promo Reward Panel */}
+          <div className="flex flex-col border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+              <div className="p-4 border-b border-[#333] flex justify-between items-center bg-[#1A1A1A]">
+                   <div className="flex items-center gap-2">
+                       <Zap size={16} className="text-blue-400" />
+                       <span className="text-xs font-bold text-white uppercase tracking-widest">Promo Rewards</span>
+                   </div>
+                   <div className="text-[10px] text-zinc-500 font-mono">EMAIL + AMOUNT + PROMO</div>
+              </div>
+              <div className="flex-1 p-4 space-y-3">
+                <input
+                  value={rawPromoEmail}
+                  onChange={(e) => setRawPromoEmail(e.target.value)}
+                  placeholder="email@example.com"
+                  className="w-full bg-[#0A0A0A] border border-[#333] rounded-sm px-3 py-2 text-xs text-white placeholder:text-zinc-600 focus:border-[#F40009] outline-none"
+                />
+                <input
+                  value={rawPromoAmount}
+                  onChange={(e) => setRawPromoAmount(e.target.value)}
+                  placeholder="Reward amount"
+                  className="w-full bg-[#0A0A0A] border border-[#333] rounded-sm px-3 py-2 text-xs text-white placeholder:text-zinc-600 focus:border-[#F40009] outline-none"
+                />
+                <input
+                  value={rawPromoCode}
+                  onChange={(e) => setRawPromoCode(e.target.value)}
+                  placeholder="Promo label (optional)"
+                  className="w-full bg-[#0A0A0A] border border-[#333] rounded-sm px-3 py-2 text-xs text-white placeholder:text-zinc-600 focus:border-[#F40009] outline-none"
+                />
+                <div className="text-[10px] text-zinc-600 font-mono">
+                  These rewards will appear in Rewards as Promo totals (blue).
                 </div>
-              ) : (
-                <div />
-              )}
+              </div>
+              <div className="p-4 border-t border-[#333] bg-[#1A1A1A]">
+                  <button onClick={handlePromoRewardAdd} className="w-full py-2 bg-[#222] hover:bg-blue-500 text-white text-xs font-bold uppercase tracking-widest rounded-sm border border-[#333] hover:border-blue-500 transition-all flex items-center justify-center gap-2 group">
+                      <Save size={14} className="group-hover:scale-110 transition-transform" /> Add Promo Reward
+                  </button>
+              </div>
+          </div>
+      </div>
+  );
+
+  const CommandCenterView = () => {
+      const ready = model.accountsReady.filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true));
+
+      const toggleSelection = (emailKey: string) => {
+          setSelectedReady(prev => {
+              const next = new Set(prev);
+              if (next.has(emailKey)) next.delete(emailKey);
+              else next.add(emailKey);
+              return next;
+          });
+      };
+
+      const selectTop = (count: number) => {
+          const top = ready.slice(0, count).map(a => a.emailKey);
+          setSelectedReady(new Set(top));
+      };
+
+      const copySelected = () => {
+          if (selectedReady.size === 0) {
+              pushToast("warn", "No accounts selected");
+              return;
+          }
+          const selectedRows = ready.filter(a => selectedReady.has(a.emailKey));
+          const text = accountsToTSV(selectedRows);
+          copyToClipboard(text);
+          pushToast("ok", "Copied to Clipboard", `${selectedRows.length} accounts ready for paste`);
+      };
+
+      return (
+          <div className="space-y-6">
+              {/* Toolbar */}
+              <div className="flex items-center justify-between bg-[#111] p-4 rounded-sm border border-[#333]">
+                  <div className="flex items-center gap-4">
+                      <div className="flex flex-col">
+                          <h2 className="text-white font-bold uppercase tracking-wider flex items-center gap-2">
+                              <Target size={20} className="text-[#F40009]"/> Command Center
+                          </h2>
+                          <span className="text-xs text-zinc-500">{ready.length} AVAILABLE ACCOUNTS</span>
+                      </div>
+                      <div className="h-8 w-[1px] bg-[#333]" />
+                      <div className="flex gap-2">
+                          <button onClick={() => selectTop(10)} className="px-3 py-1.5 bg-[#222] hover:bg-[#333] text-white text-[10px] font-bold uppercase tracking-widest rounded-sm border border-[#333] transition-colors">Select Top 10</button>
+                          <button onClick={() => selectTop(25)} className="px-3 py-1.5 bg-[#222] hover:bg-[#333] text-white text-[10px] font-bold uppercase tracking-widest rounded-sm border border-[#333] transition-colors">Select Top 25</button>
+                          <button onClick={() => selectTop(50)} className="px-3 py-1.5 bg-[#222] hover:bg-[#333] text-white text-[10px] font-bold uppercase tracking-widest rounded-sm border border-[#333] transition-colors">Select Top 50</button>
+                          <button onClick={() => setSelectedReady(new Set())} className="px-3 py-1.5 bg-transparent hover:bg-[#222] text-zinc-500 hover:text-white text-[10px] font-bold uppercase tracking-widest rounded-sm transition-colors">Clear</button>
+                      </div>
+                  </div>
+                  <button onClick={copySelected} className="flex items-center gap-2 px-6 py-2 bg-[#F40009] hover:bg-red-600 text-white text-xs font-bold uppercase tracking-widest rounded-sm transition-all shadow-[0_0_15px_rgba(244,0,9,0.3)] hover:shadow-[0_0_25px_rgba(244,0,9,0.5)]">
+                      <Copy size={14} /> Copy Selected ({selectedReady.size})
+                  </button>
+              </div>
+
+              {/* Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
+                  {ready.map((a: any) => {
+                      const isSelected = selectedReady.has(a.emailKey);
+                      return (
+                          <div 
+                              key={a.emailKey} 
+                              onClick={() => toggleSelection(a.emailKey)}
+                              className={`relative p-4 border rounded-sm cursor-pointer transition-all group ${isSelected ? "bg-[#1A1A1A] border-[#F40009]" : "bg-[#111] border-[#333] hover:border-zinc-500"}`}
+                          >
+                              <div className="flex justify-between items-start mb-2">
+                                  <div className={`w-3 h-3 rounded-sm border ${isSelected ? "bg-[#F40009] border-[#F40009]" : "border-zinc-600"}`}>
+                                      {isSelected && <CheckSquare size={10} className="text-white" />}
+                                  </div>
+                                  {a.tier === "Gold" && <Badge kind="gold">GOLD</Badge>}
+                                  {a.tier === "Platinum" && <Badge kind="plat">PLAT</Badge>}
+                              </div>
+                              <div className="font-mono text-xs text-white truncate mb-1">{a.email}</div>
+                              <div className="flex justify-between items-end">
+                                  <div className="text-[10px] text-zinc-500 font-mono">
+                                      <div>BAL: <span className="text-zinc-300">{money(a.netBalance)}</span></div>
+                                      <div>CONF: {a.confirmedBookings}</div>
+                                  </div>
+                                  <div className="text-[10px] text-zinc-600 font-mono">
+                                      PASS: {a.password ? "YES" : "NO"}
+                                  </div>
+                              </div>
+                          </div>
+                      );
+                  })}
+              </div>
+          </div>
+      );
+  };
+
+  const HotelIntelligenceView = () => {
+      const top = model.derivedHotels.slice(0, 50);
+      const badActors = model.derivedHotels.filter((h: any) => h.cancelled >= 3 && h.reliability < 50);
+      const filter = tableFilters.hotelIntel;
+      const sort = tableSorts.hotelIntel;
+      const filtered = top.filter((h: any) => {
+        if (!filter) return true;
+        const haystack = `${h.name} ${h.hotelId}`.toLowerCase();
+        return haystack.includes(filter.toLowerCase());
+      });
+      const ranked = sortRows(filtered, sort.key, sort.dir);
+
+      return (
+          <div className="space-y-6">
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                  {/* Scatter Plot */}
+                  <div className="bg-[#111] border border-[#333] rounded-sm p-6">
+                      <h3 className="text-white font-bold uppercase tracking-wider mb-4 flex items-center gap-2">
+                          <ScatterChart size={18} className="text-blue-500" /> Reliability Matrix
+                      </h3>
+                      <div className="h-64 w-full">
+                          <ResponsiveContainer width="100%" height="100%">
+                              <ScatterChart>
+                                  <CartesianGrid strokeDasharray="3 3" stroke={AUDI_COLORS.grid} />
+                                  <XAxis type="number" dataKey="totalBookings" name="Volume" stroke="#666" tick={{fontSize: 10}} label={{ value: 'Volume', position: 'insideBottomRight', offset: -5, fill: '#666', fontSize: 10 }} />
+                                  <YAxis type="number" dataKey="reliability" name="Reliability" stroke="#666" tick={{fontSize: 10}} unit="%" />
+                                  <RechartsTooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={theme.tooltip} />
+                                  <Scatter name="Hotels" data={top} fill="#3B82F6" />
+                              </ScatterChart>
+                          </ResponsiveContainer>
+                      </div>
+                  </div>
+
+                  {/* Bad Actors */}
+                  <div className="bg-[#111] border border-[#333] rounded-sm p-6 overflow-hidden flex flex-col">
+                      <h3 className="text-white font-bold uppercase tracking-wider mb-4 flex items-center gap-2 text-red-500">
+                          <Ban size={18} /> High Risk Hotels
+                      </h3>
+                      <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2">
+                          {badActors.length === 0 ? <div className="text-zinc-600 text-xs italic">No high-risk hotels detected.</div> : 
+                              badActors.map((h: any) => (
+                                  <div key={h.hotelId} className="flex justify-between items-center p-3 bg-[#1A0505] border border-red-900/30 rounded-sm">
+                                      <div className="truncate pr-4">
+                                          <div className="text-red-200 text-xs font-bold truncate">{h.name}</div>
+                                          <div className="text-[10px] text-red-400/60 font-mono">{h.hotelId}</div>
+                                      </div>
+                                      <div className="text-right shrink-0">
+                                          <div className="text-red-500 font-bold text-xs">{h.reliability.toFixed(0)}% REL</div>
+                                          <div className="text-[10px] text-red-400">{h.cancelled} CANC</div>
+                                      </div>
+                                  </div>
+                              ))
+                          }
+                      </div>
+                  </div>
+              </div>
+
+              {/* Main Ranking Table */}
+              <div className="border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+                  <div className="p-4 border-b border-[#333] bg-[#1A1A1A] flex flex-wrap gap-3 justify-between items-center">
+                      <div className="text-white font-bold uppercase tracking-wider text-sm flex items-center gap-2">
+                          <Trophy size={16} className="text-yellow-500" /> Hotel Ranking (Top 50)
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          value={filter}
+                          onChange={(e) => setTableFilters((prev) => ({ ...prev, hotelIntel: e.target.value }))}
+                          placeholder="Filter hotels"
+                          className="bg-[#0A0A0A] border border-[#333] rounded-sm px-3 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-[#F40009] outline-none"
+                        />
+                        <select
+                          value={`${sort.key}:${sort.dir}`}
+                          onChange={(e) => {
+                            const [key, dir] = e.target.value.split(":");
+                            setTableSorts((prev) => ({ ...prev, hotelIntel: { key, dir: dir as "asc" | "desc" } }));
+                          }}
+                          className="bg-[#0A0A0A] border border-[#333] rounded-sm px-2 py-1.5 text-xs text-white"
+                        >
+                          <option value="rankScore:desc">Score ↓</option>
+                          <option value="rankScore:asc">Score ↑</option>
+                          <option value="reliability:desc">Reliability ↓</option>
+                          <option value="reliability:asc">Reliability ↑</option>
+                          <option value="totalBookings:desc">Bookings ↓</option>
+                          <option value="totalBookings:asc">Bookings ↑</option>
+                        </select>
+                      </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm text-zinc-400">
+                          <thead className="bg-[#151515] text-[10px] uppercase font-bold text-zinc-500">
+                              <tr>
+                                  <th className="px-6 py-3">Rank</th>
+                                  <th className="px-6 py-3">Hotel</th>
+                                  <th className="px-6 py-3">Score</th>
+                                  <th className="px-6 py-3">Reliability</th>
+                                  <th className="px-6 py-3">Volume</th>
+                                  <th className="px-6 py-3 text-right">Spend</th>
+                              </tr>
+                          </thead>
+                          <tbody className="divide-y divide-[#222]">
+                              {ranked.map((h: any, idx: number) => (
+                                  <tr key={h.hotelId} className="hover:bg-[#1A1A1A] transition-colors">
+                                      <td className="px-6 py-3 font-mono text-white">#{idx + 1}</td>
+                                      <td className="px-6 py-3">
+                                          <div className="text-white text-xs font-bold truncate max-w-[200px]">{h.name}</div>
+                                          <div className="text-[10px] text-zinc-600 font-mono">{h.hotelId}</div>
+                                      </td>
+                                      <td className="px-6 py-3 font-mono text-[#F40009] font-bold">{h.rankScore.toFixed(1)}</td>
+                                      <td className="px-6 py-3">
+                                          <div className="flex items-center gap-2">
+                                              <div className="w-12 h-1.5 bg-[#222] rounded-full overflow-hidden">
+                                                  <div className="h-full bg-blue-500" style={{width: `${h.reliability}%`}}/>
+                                              </div>
+                                              <span className="text-xs">{h.reliability.toFixed(0)}%</span>
+                                          </div>
+                                      </td>
+                                      <td className="px-6 py-3 text-xs font-mono">
+                                          <span className="text-white">{h.totalBookings}</span>
+                                          <span className="text-zinc-600 mx-1">/</span>
+                                          <span className="text-green-500">{h.confirmed}</span>
+                                      </td>
+                                      <td className="px-6 py-3 text-right font-mono text-zinc-300">{money(h.spent)}</td>
+                                  </tr>
+                              ))}
+                          </tbody>
+                      </table>
+                  </div>
+              </div>
+          </div>
+      );
+  };
+
+  const HotelsView = () => {
+    const filter = tableFilters.hotels;
+    const sort = tableSorts.hotels;
+    const filtered = model.derivedHotels.filter((h: any) => {
+      if (!filter) return true;
+      const haystack = `${h.name} ${h.hotelId}`.toLowerCase();
+      return haystack.includes(filter.toLowerCase());
+    });
+    const rows = sortRows(filtered, sort.key, sort.dir);
+
+    return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div className="xl:col-span-2 bg-[#111] border border-[#333] rounded-sm p-6">
+          <PanelHeader
+            icon={Building}
+            title="Hotel Operations"
+            subtitle="Live status, reliability, and booking performance"
+            actions={
+              <button onClick={() => downloadCSV("hotels.csv", model.derivedHotels)} className="px-3 py-1.5 bg-[#222] border border-[#333] rounded-sm text-[10px] uppercase tracking-widest text-zinc-300 hover:text-white">
+                Export
+              </button>
+            }
+          />
+          <div className="flex flex-wrap gap-2">
+            <DataPill label="Total" value={model.derivedHotels.length} />
+            <DataPill label="Eligible" value={model.hotelsEligible.length} color="#4ADE80" />
+            <DataPill label="Blocked" value={model.derivedHotels.filter((h: any) => h.isBlocked).length} color="#F40009" />
+          </div>
+        </div>
+        <div className="bg-[#111] border border-[#333] rounded-sm p-6">
+          <PanelHeader icon={ShieldAlert} title="Risk Summary" subtitle="Auto and manual block coverage" />
+          <div className="space-y-3 text-xs text-zinc-500">
+            {model.derivedHotels.slice(0, 4).map((h: any) => (
+              <div key={h.hotelId} className="flex items-center justify-between">
+                <span className="text-zinc-400 truncate max-w-[180px]">{h.name}</span>
+                <span className={h.isBlocked ? "text-[#F40009]" : "text-zinc-600"}>{h.isBlocked ? "BLOCKED" : `${h.reliability.toFixed(0)}%`}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+        <div className="bg-[#1A1A1A] border-b border-[#333] px-6 py-3 flex flex-wrap gap-3 items-center justify-between">
+          <div className="text-xs text-zinc-500 uppercase tracking-widest">Hotel Registry</div>
+          <div className="flex items-center gap-2">
+            <input
+              value={filter}
+              onChange={(e) => setTableFilters((prev) => ({ ...prev, hotels: e.target.value }))}
+              placeholder="Filter hotels"
+              className="bg-[#0A0A0A] border border-[#333] rounded-sm px-3 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-[#F40009] outline-none"
+            />
+            <select
+              value={`${sort.key}:${sort.dir}`}
+              onChange={(e) => {
+                const [key, dir] = e.target.value.split(":");
+                setTableSorts((prev) => ({ ...prev, hotels: { key, dir: dir as "asc" | "desc" } }));
+              }}
+              className="bg-[#0A0A0A] border border-[#333] rounded-sm px-2 py-1.5 text-xs text-white"
+            >
+              <option value="rankScore:desc">Rank Score ↓</option>
+              <option value="rankScore:asc">Rank Score ↑</option>
+              <option value="reliability:desc">Reliability ↓</option>
+              <option value="reliability:asc">Reliability ↑</option>
+              <option value="totalBookings:desc">Bookings ↓</option>
+              <option value="totalBookings:asc">Bookings ↑</option>
+            </select>
+          </div>
+        </div>
+        <div className="overflow-x-auto max-h-[70vh]">
+          <table className="w-full text-left text-sm text-zinc-400">
+            <thead className="bg-[#151515] text-[10px] uppercase font-bold text-zinc-500 sticky top-0">
+              <tr>
+                <th className="px-6 py-3">Hotel</th>
+                <th className="px-6 py-3">Reliability</th>
+                <th className="px-6 py-3">Bookings</th>
+                <th className="px-6 py-3">Status</th>
+                <th className="px-6 py-3 text-right">Spend</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#222]">
+              {rows.map((h: any) => (
+                <tr key={h.hotelId} className="hover:bg-[#1A1A1A] transition-colors">
+                  <td className="px-6 py-3">
+                    <div className="text-white font-bold text-xs truncate max-w-[220px]">{h.name}</div>
+                    <div className="text-[10px] text-zinc-600 font-mono">{h.hotelId}</div>
+                  </td>
+                  <td className="px-6 py-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-16 h-1.5 bg-[#222] rounded-full overflow-hidden">
+                        <div className={`h-full ${h.reliability > 80 ? "bg-green-500" : h.reliability > 60 ? "bg-yellow-500" : "bg-red-500"}`} style={{ width: `${h.reliability}%` }} />
+                      </div>
+                      <span className="text-xs">{h.reliability.toFixed(0)}%</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-3 text-xs font-mono">
+                    <span className="text-white">{h.totalBookings}</span>
+                    <span className="text-zinc-600 mx-1">/</span>
+                    <span className="text-green-500">{h.confirmed}</span>
+                    <span className="text-zinc-600 mx-1">/</span>
+                    <span className="text-blue-400">{h.completed}</span>
+                    <span className="text-zinc-600 mx-1">/</span>
+                    <span className="text-red-400">{h.cancelled}</span>
+                  </td>
+                  <td className="px-6 py-3">
+                    <div className="flex items-center gap-2">
+                      {h.isBlocked ? <Badge kind="block">BLOCK</Badge> : <Badge kind="active">OK</Badge>}
+                      {h.techBlocked && <Badge kind="tech">TECH</Badge>}
+                    </div>
+                    {h.blockReason && <div className="text-[10px] text-red-400 mt-1">{h.blockReason}</div>}
+                  </td>
+                  <td className="px-6 py-3 text-right font-mono text-zinc-300">{money(h.spent)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+  };
+
+  const SpentView = () => {
+    const filter = tableFilters.spent;
+    const sort = tableSorts.spent;
+    const filtered = state.sales.filter((s: any) => {
+      if (!filter) return true;
+      const haystack = `${s.email} ${s.note ?? ""} ${s.date}`.toLowerCase();
+      return haystack.includes(filter.toLowerCase());
+    });
+    const sorted = sortRows(filtered, sort.key, sort.dir);
+    const totalSpent = sorted.reduce((sum, s) => sum + Number(s.amount || 0), 0);
+    return (
+      <div className="space-y-6">
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="xl:col-span-2 bg-[#111] border border-[#333] rounded-sm p-6">
+            <PanelHeader
+              icon={Wallet}
+              title="Spend Ledger"
+              subtitle="Expense tracking and reimbursements"
+              actions={
+                <button onClick={() => downloadCSV("spent.csv", state.sales)} className="px-3 py-1.5 bg-[#222] border border-[#333] rounded-sm text-[10px] uppercase tracking-widest text-zinc-300 hover:text-white">
+                  Export CSV
+                </button>
+              }
+            />
+            <div className="flex flex-wrap gap-2">
+              <DataPill label="Total Spent" value={money(totalSpent)} color="#FACC15" />
+              <DataPill label="Entries" value={sorted.length} />
+            </div>
+          </div>
+          <div className="bg-[#111] border border-[#333] rounded-sm p-6">
+            <PanelHeader icon={CreditCard} title="Latest Charges" subtitle="Most recent 4 entries" />
+            <div className="space-y-2">
+              {sorted.slice(0, 4).map((s: any) => (
+                <div key={s.id} className="flex items-center justify-between border border-[#222] rounded-sm px-3 py-2 bg-[#0F0F0F]">
+                  <div>
+                    <div className="text-xs text-white font-mono truncate max-w-[160px]">{s.email}</div>
+                    <div className="text-[10px] text-zinc-500 font-mono">{s.date}</div>
+                  </div>
+                  <div className="text-xs text-yellow-300 font-mono">{money(s.amount)}</div>
+                </div>
+              ))}
+              {sorted.length === 0 && <div className="text-xs text-zinc-600">No spending logged.</div>}
             </div>
           </div>
         </div>
 
-        {/* BOOKINGS TABLE */}
-        <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
-          <div className="p-4 border-b border-slate-200 flex flex-wrap gap-3 items-center justify-between">
-            <div className="font-bold text-slate-900">Bookings Log (Google-like columns)</div>
-            <div className="flex flex-wrap items-center gap-3 text-xs">
-              <div className="text-slate-500">{filtered.length} / {state.bookings.length}</div>
+        <div className="border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+          <div className="bg-[#1A1A1A] border-b border-[#333] px-6 py-3 flex flex-wrap gap-3 items-center justify-between">
+            <div className="text-xs text-zinc-500 uppercase tracking-widest">Spend Entries</div>
+            <div className="flex items-center gap-2">
+              <input
+                value={filter}
+                onChange={(e) => setTableFilters((prev) => ({ ...prev, spent: e.target.value }))}
+                placeholder="Filter spend"
+                className="bg-[#0A0A0A] border border-[#333] rounded-sm px-3 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-[#F40009] outline-none"
+              />
               <select
-                value={bookingSortKey}
-                onChange={(e) => setBookingSortKey((e.target as HTMLSelectElement).value)}
-                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700"
-              >
-                <option value="createdAt">Sort: Created</option>
-                <option value="checkIn">Sort: CheckIn</option>
-                <option value="checkOut">Sort: CheckOut</option>
-                <option value="cost">Sort: Cost</option>
-                <option value="rewardAmount">Sort: Reward</option>
-                <option value="status">Sort: Status</option>
-              </select>
-              <button
-                onClick={() => setBookingSortDir((d) => (d === "asc" ? "desc" : "asc"))}
-                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold"
-              >
-                {bookingSortDir === "asc" ? "▲" : "▼"}
-              </button>
-              <select
-                value={bookingStatusFilter}
-                onChange={(e) => setBookingStatusFilter((e.target as HTMLSelectElement).value)}
-                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700"
-              >
-                <option value="ALL">Status: ALL</option>
-                <option value="Pending">Pending</option>
-                <option value="Confirmed">Confirmed</option>
-                <option value="Completed">Completed</option>
-                <option value="Cancelled">Cancelled</option>
-              </select>
-
-              <select
-                value={bookingTypeFilter}
-                onChange={(e) => setBookingTypeFilter((e.target as HTMLSelectElement).value)}
-                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700"
-              >
-                <option value="ALL">Type: ALL</option>
-                {getRewardTypes(state.settings).map((t: any) => (
-                  <option key={t.name} value={t.name}>{t.name}</option>
-                ))}
-              </select>
-
-              <label className="text-slate-500 flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={bookingMissingPaidFilter}
-                  onChange={(e) => setBookingMissingPaidFilter((e.target as HTMLInputElement).checked)}
-                />
-                missing RewardPaidOn
-              </label>
-              <label className="text-slate-500 flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={bookingMissingPasswordFilter}
-                  onChange={(e) => setBookingMissingPasswordFilter((e.target as HTMLInputElement).checked)}
-                />
-                missing password
-              </label>
-              <button
-                onClick={() => setBookingEditMode((s) => !s)}
-                className="px-3 py-2 rounded-xl border border-slate-900 bg-slate-900 hover:bg-slate-800 text-slate-100 text-xs font-bold"
-              >
-                Action: {bookingEditMode ? "ON" : "OFF"}
-              </button>
-              <button
-                onClick={() => {
-                  const map = new Map<string, any[]>();
-                  for (const b of state.bookings) {
-                    const key = `${String(b.bookingNo)}::${String(b.pin || "").padStart(4, "0")}`;
-                    if (!map.has(key)) map.set(key, []);
-                    map.get(key)!.push(b);
-                  }
-                  const dup = Array.from(map.values()).filter((list) => list.length > 1);
-                  setBookingDupRows(dup.flat());
-                  setBookingDupOpen(true);
+                value={`${sort.key}:${sort.dir}`}
+                onChange={(e) => {
+                  const [key, dir] = e.target.value.split(":");
+                  setTableSorts((prev) => ({ ...prev, spent: { key, dir: dir as "asc" | "desc" } }));
                 }}
-                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold"
+                className="bg-[#0A0A0A] border border-[#333] rounded-sm px-2 py-1.5 text-xs text-white"
               >
-                Check duplicates
-              </button>
+                <option value="date:desc">Newest</option>
+                <option value="date:asc">Oldest</option>
+                <option value="amount:desc">Amount ↓</option>
+                <option value="amount:asc">Amount ↑</option>
+              </select>
             </div>
           </div>
-
-          <div className="overflow-x-auto max-h-[72vh]">
-            <table className="w-full text-left text-sm text-slate-500">
-              <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
+          <div className="overflow-x-auto max-h-[70vh]">
+            <table className="w-full text-left text-sm text-zinc-400">
+              <thead className="bg-[#151515] text-[10px] uppercase font-bold text-zinc-500 sticky top-0">
                 <tr>
-                  <th className="px-6 py-4">Date</th>
-                  <th className="px-6 py-4">AccountID</th>
-                  <th className="px-6 py-4">BookingNo</th>
-                  <th className="px-6 py-4">PIN</th>
-                  <th className="px-6 py-4">Hotel</th>
-                  <th className="px-6 py-4">Password</th>
-                  <th className="px-6 py-4">Cost</th>
-                  <th className="px-6 py-4">CheckIn</th>
-                  <th className="px-6 py-4">CheckOut</th>
-                  <th className="px-6 py-4">Reward</th>
-                  <th className="px-6 py-4">Type</th>
-                  <th className="px-6 py-4">Airline</th>
-                  <th className="px-6 py-4">Status</th>
-                  <th className="px-6 py-4">Stat</th>
-                  <th className="px-6 py-4">LEVEL</th>
-                  <th className="px-6 py-4">Reward paid on</th>
-                  <th className="px-6 py-4">Reward ETA</th>
+                  <th className="px-6 py-3">Date</th>
+                  <th className="px-6 py-3">Account</th>
+                  <th className="px-6 py-3">Note</th>
+                  <th className="px-6 py-3 text-right">Amount</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200">
-                {filtered.map((b: any) => {
-                  const eta = computeRewardETA(b, state.settings);
-                  const paidMissing = !String(b.rewardPaidOn || "").trim();
-                  const account = accountByEmail.get(safeLower(b.email));
-                  const cancelled = account?.cancelledBookings || 0;
-                  const positive = account?.positiveBookings || 0;
-                  const missingPassword = !String(account?.password || "").trim();
-                  return (
-                    <tr
-                      key={b.bookingId}
-                      className={`hover:bg-slate-50 ${paidMissing ? "bg-amber-500/5" : ""} ${
-                        missingPassword ? "ring-1 ring-rose-500/10" : ""
-                      }`}
-                    >
-                      <td className="px-6 py-4">{b.createdAt}</td>
-                      <td className="px-6 py-4">
-                        <div className={`font-medium ${missingPassword ? "text-rose-200" : "text-slate-900"}`}>{b.email}</div>
-                        {missingPassword && <div className="text-xs text-rose-400 mt-1">no password</div>}
-                      </td>
-                      <td className="px-6 py-4 font-mono text-slate-700">{b.bookingNo}</td>
-                      <td className="px-6 py-4 font-mono">{String(b.pin || "").padStart(4, "0")}</td>
-                      <td className="px-6 py-4">
-                        <div className="text-slate-900 font-medium">{b.hotelNameSnapshot}</div>
-                        <div className="text-xs text-slate-500 font-mono">{b.hotelId}</div>
-                      </td>
-                      <td className="px-6 py-4 font-mono text-xs">
-                        {missingPassword ? <span className="text-rose-300">—</span> : account?.password}
-                      </td>
-                      <td className="px-6 py-4 font-mono">{money(b.cost)}</td>
-                      <td className="px-6 py-4">{b.checkIn}</td>
-                      <td className="px-6 py-4">{b.checkOut}</td>
-                      <td className="px-6 py-4 font-mono text-slate-700">
-                        {bookingEditMode ? (
-                          <div className="flex items-center gap-2">
-                            <input
-                              defaultValue={b.rewardAmount}
-                              onBlur={(e) => {
-                                const rewardAmount = parseMoney((e.target as HTMLInputElement).value);
-                                setState((prev: any) => {
-                                  const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                                  const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                                  if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardAmount };
-                                  next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward amount updated: ${b.email} / ${b.bookingNo} → ${rewardAmount}` });
-                                  next.audit = next.audit.slice(-400);
-                                  return next;
-                                });
-                              }}
-                              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs w-24"
-                            />
-                            <select
-                              defaultValue={b.rewardCurrency || "USD"}
-                              onBlur={(e) => {
-                                const rewardCurrency = (e.target as HTMLSelectElement).value;
-                                setState((prev: any) => {
-                                  const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                                  const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                                  if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardCurrency };
-                                  next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward currency updated: ${b.email} / ${b.bookingNo} → ${rewardCurrency}` });
-                                  next.audit = next.audit.slice(-400);
-                                  return next;
-                                });
-                              }}
-                              className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 text-xs"
-                            >
-                              <option value="USD">USD</option>
-                              <option value="EUR">EUR</option>
-                              <option value="GBP">GBP</option>
-                            </select>
-                          </div>
-                        ) : b.rewardAmount ? (
-                          `${b.rewardCurrency || "USD"} ${Number(b.rewardAmount || 0).toFixed(2)}`
-                        ) : (
-                          <span className="text-slate-600">—</span>
-                        )}
-                      </td>
-
-                      <td className="px-6 py-4">
-                        {bookingEditMode ? (
-                          <select
-                            defaultValue={normalizeRewardType(b.rewardType || "Booking", getRewardTypes(state.settings))}
-                            onBlur={(e) => {
-                              const rewardType = (e.target as HTMLSelectElement).value;
-                              setState((prev: any) => {
-                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardType };
-                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward type updated: ${b.email} / ${b.bookingNo} → ${rewardType}` });
-                                next.audit = next.audit.slice(-400);
-                                return next;
-                              });
-                            }}
-                            className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none"
-                          >
-                            {getRewardTypes(state.settings).map((t: any) => (
-                              <option key={t.name} value={t.name}>{t.name}</option>
-                            ))}
-                          </select>
-                        ) : (
-                          <span className="text-slate-600">{normalizeRewardType(b.rewardType || "Booking", getRewardTypes(state.settings))}</span>
-                        )}
-                      </td>
-
-                      <td className="px-6 py-4">
-                        {bookingEditMode ? (
-                          <input
-                            defaultValue={b.airline || ""}
-                            onBlur={(e) => {
-                              const airline = (e.target as HTMLInputElement).value;
-                              setState((prev: any) => {
-                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], airline };
-                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Airline updated: ${b.email} / ${b.bookingNo} → ${airline || "CLEAR"}` });
-                                next.audit = next.audit.slice(-400);
-                                return next;
-                              });
-                            }}
-                            placeholder="AA / Delta / Lufthansa"
-                            className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none w-40"
-                          />
-                        ) : (
-                          <span className="text-slate-600">{b.airline || "—"}</span>
-                        )}
-                      </td>
-
-                      <td className="px-6 py-4">
-                        {bookingEditMode ? (
-                          <select
-                            defaultValue={b.status}
-                            onBlur={(e) => {
-                              const status = (e.target as HTMLSelectElement).value;
-                              setState((prev: any) => {
-                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], status };
-                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Booking status updated: ${b.email} / ${b.bookingNo} → ${status}` });
-                                next.audit = next.audit.slice(-400);
-                                return next;
-                              });
-                            }}
-                            className="bg-white border border-slate-200 rounded text-xs px-2 py-1 text-slate-600 outline-none"
-                          >
-                            <option>Pending</option>
-                            <option>Confirmed</option>
-                            <option>Completed</option>
-                            <option>Cancelled</option>
-                          </select>
-                        ) : (
-                          <div className="text-xs text-slate-600">{b.status}</div>
-                        )}
-                        <div className="mt-2">
-                          {b.status === "Confirmed" ? (
-                            <Badge themeMode={themeMode} kind="active">CONFIRMED</Badge>
-                          ) : b.status === "Pending" ? (
-                            <Badge themeMode={themeMode} kind="dim">PENDING</Badge>
-                          ) : b.status === "Completed" ? (
-                            <Badge themeMode={themeMode} kind="gold">COMPLETED</Badge>
-                          ) : b.status === "Cancelled" ? (
-                            <Badge themeMode={themeMode} kind="block">CANCELLED</Badge>
-                          ) : (
-                            <Badge themeMode={themeMode} kind="dim">{b.status}</Badge>
-                          )}
-                        </div>
-                      </td>
-
-                      <td className="px-6 py-4 text-xs font-mono">
-                        <span className="text-emerald-300">{positive}</span>
-                        <span className="text-slate-600">/</span>
-                        <span className={cancelled > 0 ? "text-rose-400" : "text-slate-500"}>{cancelled}</span>
-                      </td>
-
-                      <td className="px-6 py-4">{b.level || <span className="text-slate-600">—</span>}</td>
-
-                      <td className="px-6 py-4">
-                        {bookingEditMode ? (
-                          <input
-                            type="date"
-                            defaultValue={b.rewardPaidOn || ""}
-                            onBlur={(e) => {
-                              const rewardPaidOn = (e.target as HTMLInputElement).value;
-                              setState((prev: any) => {
-                                const next = { ...prev, bookings: [...prev.bookings], audit: [...(prev.audit || [])] };
-                                const idx = next.bookings.findIndex((x: any) => x.bookingId === b.bookingId);
-                                if (idx >= 0) next.bookings[idx] = { ...next.bookings[idx], rewardPaidOn };
-                                next.audit.push({ id: uid(), at: new Date().toISOString(), type: "BOOKING_UPDATE", msg: `Reward paid date updated: ${b.email} / ${b.bookingNo} → ${rewardPaidOn || "CLEAR"}` });
-                                next.audit = next.audit.slice(-400);
-                                return next;
-                              });
-                            }}
-                            className={`bg-white border rounded text-xs px-2 py-1 text-slate-600 outline-none ${
-                              paidMissing ? "border-amber-500/40" : "border-slate-200"
-                            }`}
-                          />
-                        ) : (
-                          <span className="text-slate-600">{b.rewardPaidOn || "—"}</span>
-                        )}
-                      </td>
-
-                      <td className="px-6 py-4 font-mono text-xs text-slate-700">{eta || <span className="text-slate-600">—</span>}</td>
-                    </tr>
-                  );
-                })}
-
-                {filtered.length === 0 && (
-                  <tr>
-                    <td colSpan={17} className="px-6 py-10 text-center text-slate-500">No bookings match current filters. Paste into Smart Import.</td>
+              <tbody className="divide-y divide-[#222]">
+                {sorted.map((s: any) => (
+                  <tr key={s.id} className="hover:bg-[#1A1A1A] transition-colors">
+                    <td className="px-6 py-3 text-xs font-mono text-zinc-500">{s.date}</td>
+                    <td className="px-6 py-3 text-xs text-white font-mono">{s.email}</td>
+                    <td className="px-6 py-3 text-xs text-zinc-500">{s.note || "—"}</td>
+                    <td className="px-6 py-3 text-right text-xs font-mono text-yellow-300">{money(s.amount)}</td>
                   </tr>
-                )}
+                ))}
               </tbody>
             </table>
           </div>
@@ -3097,886 +2109,726 @@ export default function App() {
   };
 
   const RewardView = () => {
-    const rows = rewardSummary.filter((r: any) =>
-      searchTerm ? safeLower(r.email).includes(safeLower(searchTerm)) : true
-    );
+    const rewardRows = state.bookings.filter((b: any) => Number(b.rewardAmount || 0) > 0 || b.rewardPaidOn);
+    const paidRows = rewardRows.filter((b: any) => b.rewardPaidOn);
+    const pendingRows = rewardRows
+      .filter((b: any) => !b.rewardPaidOn)
+      .map((b: any) => ({ ...b, eta: computeRewardETA(b, state.settings) }));
+    const totalRewards = rewardRows.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
+    const paidTotal = paidRows.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
+    const pendingTotal = totalRewards - paidTotal;
+    const pendingCount = pendingRows.length;
+    const spentAll = state.sales.reduce((sum: number, s: any) => sum + Number(s.amount || 0), 0);
+    const promoAll = (state.specialRewards || []).reduce((sum: number, r: any) => sum + Number(r.amount || 0), 0);
+    const filterPaid = tableFilters.rewardsPaid;
+    const filterPending = tableFilters.rewardsPending;
+    const sortPaid = tableSorts.rewardsPaid;
+    const sortPending = tableSorts.rewardsPending;
+    const salesByEmail = new Map<string, number>();
+    for (const s of state.sales) {
+      const key = safeLower(s.email);
+      salesByEmail.set(key, (salesByEmail.get(key) || 0) + Number(s.amount || 0));
+    }
+    const promoByEmail = new Map<string, number>();
+    for (const r of state.specialRewards || []) {
+      const key = safeLower(r.email);
+      promoByEmail.set(key, (promoByEmail.get(key) || 0) + Number(r.amount || 0));
+    }
+
+    const rewardSummary = model.derivedAccounts
+      .map((acc: any) => {
+        const accountPaid = paidRows.filter((b: any) => safeLower(b.email) === acc.emailKey);
+        const accountPending = pendingRows.filter((b: any) => safeLower(b.email) === acc.emailKey);
+        const paidTotalAcc = accountPaid.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
+        const pendingTotalAcc = accountPending.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
+        const lastPaidOn = accountPaid
+          .map((b: any) => b.rewardPaidOn)
+          .filter(Boolean)
+          .sort((a: string, b: string) => (parseDate(b)?.getTime() || 0) - (parseDate(a)?.getTime() || 0))[0] || "";
+        const daysSinceLast = lastPaidOn ? daysDiff(lastPaidOn) : null;
+        const spentTotal = salesByEmail.get(acc.emailKey) || 0;
+        const promoTotal = promoByEmail.get(acc.emailKey) || 0;
+        let medal = "—";
+        if (paidTotalAcc > 300 && pendingTotalAcc === 0 && daysSinceLast !== null) {
+          if (daysSinceLast >= 40) medal = "Platinum";
+          else if (daysSinceLast >= 20) medal = "Gold";
+        } else if (paidTotalAcc >= 200 && paidTotalAcc <= 300 && daysSinceLast !== null) {
+          medal = daysSinceLast <= 20 ? "Bronze/Silver" : "Silver";
+        } else if (paidTotalAcc >= 50 && paidTotalAcc < 200) {
+          medal = "Bronze";
+        }
+        return {
+          email: acc.email,
+          emailKey: acc.emailKey,
+          paidTotal: paidTotalAcc,
+          pendingTotal: pendingTotalAcc,
+          promoTotal,
+          spentTotal,
+          lastPaidOn,
+          daysSinceLast,
+          medal,
+          currentBalance: acc.netBalance,
+        };
+      })
+      .filter((row) => row.paidTotal > 0 || row.pendingTotal > 0 || row.spentTotal > 0 || row.promoTotal > 0);
+
+    const paidFiltered = rewardSummary.filter((row: any) => {
+      if (!filterPaid) return true;
+      const haystack = `${row.email} ${row.medal} ${row.lastPaidOn}`.toLowerCase();
+      return haystack.includes(filterPaid.toLowerCase());
+    });
+    const pendingFiltered = pendingRows.filter((b: any) => {
+      if (!filterPending) return true;
+      const haystack = `${b.email} ${b.bookingNo} ${b.rewardType} ${b.eta}`.toLowerCase();
+      return haystack.includes(filterPending.toLowerCase());
+    });
+    const paidSorted = sortRows(paidFiltered, sortPaid.key, sortPaid.dir);
+    const pendingSorted = sortRows(pendingFiltered, sortPending.key, sortPending.dir);
+
+    const trend = netTrend.map((d) => ({ date: d.date, earned: d.earned }));
 
     return (
       <div className="space-y-6">
-        <div className={`${theme.panel} rounded-2xl overflow-hidden shadow-xl`}>
-          <div className="p-4 border-b border-slate-200 font-bold text-slate-900 flex justify-between items-center">
-            <span>Reward — Accounts</span>
-            <span className="text-slate-500 text-sm font-normal">{rows.length} rows</span>
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="xl:col-span-2 bg-[#111] border border-[#333] rounded-sm p-6">
+            <PanelHeader
+              icon={Zap}
+              title="Reward Operations"
+              subtitle="Paid vs upcoming reward pipeline"
+              actions={
+                <button onClick={() => downloadCSV("rewards.csv", rewardRows)} className="px-3 py-1.5 bg-[#222] border border-[#333] rounded-sm text-[10px] uppercase tracking-widest text-zinc-300 hover:text-white">
+                  Export CSV
+                </button>
+              }
+            />
+            <div className="flex flex-wrap gap-2">
+              <DataPill label="Total" value={money(totalRewards)} color="#4ADE80" />
+              <DataPill label="Paid" value={money(paidTotal)} color="#4ADE80" />
+              <DataPill label="Pending" value={money(pendingTotal)} color="#FACC15" />
+              <DataPill label="Promo" value={money(promoAll)} color="#60A5FA" />
+              <DataPill label="Spent" value={money(spentAll)} color="#FCA5A5" />
+              <DataPill label="Balance Now" value={money(model.totalLeft)} color="#FFFFFF" />
+              <DataPill label="Waiting" value={pendingCount} color="#FACC15" />
+            </div>
           </div>
-          <div className="overflow-x-auto max-h-[75vh]">
-            <table className="w-full text-left text-sm text-slate-500">
-              <thead className="bg-white text-xs uppercase font-medium text-slate-500 sticky top-0 z-10">
-                <tr>
-                  <th className="px-6 py-4">Account</th>
-                  <th className="px-6 py-4">Password</th>
-                  <th className="px-6 py-4">Accumulated</th>
-                  <th className="px-6 py-4">Last Reward</th>
-                  <th className="px-6 py-4">Next Reward</th>
-                  <th className="px-6 py-4">Days Left</th>
-                  <th className="px-6 py-4">Potential</th>
-                  <th className="px-6 py-4">Spent</th>
-                  <th className="px-6 py-4">Rest</th>
-                  <th className="px-6 py-4">Medal</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {rows.map((r: any) => (
-                  <tr key={r.email} className="hover:bg-slate-50 cursor-pointer" onClick={() => setRewardModalEmail(r.email)}>
-                    <td className="px-6 py-4 text-slate-900 font-semibold">{r.email}</td>
-                    <td className="px-6 py-4 font-mono text-xs text-slate-700">{r.password || "—"}</td>
-                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.accumulated)}</td>
-                    <td className="px-6 py-4 text-slate-700">{r.lastRewardAt || "—"}</td>
-                    <td className="px-6 py-4 text-slate-700">{r.nextRewardAt || "—"}</td>
-                    <td className="px-6 py-4 text-slate-700">{r.daysUntilNext ?? "—"}</td>
-                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.potential)}</td>
-                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.spent)}</td>
-                    <td className="px-6 py-4 font-mono text-slate-700">{money(r.restAmount)}</td>
-                    <td className="px-6 py-4 text-slate-700">{r.medal}</td>
-                  </tr>
-                ))}
-                {rows.length === 0 && (
-                  <tr>
-                    <td colSpan={10} className="px-6 py-10 text-center text-slate-500">No reward data.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+          <div className="bg-[#111] border border-[#333] rounded-sm p-6">
+            <PanelHeader icon={TrendingUp} title="Reward Trend" subtitle="Last 30/90 days" />
+            <div className="h-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trend}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
+                  <XAxis dataKey="date" stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#666" }} minTickGap={30} />
+                  <YAxis stroke={theme.axis} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#666" }} />
+                  <RechartsTooltip contentStyle={theme.tooltip} />
+                  <Line type="monotone" dataKey="earned" stroke="#4ADE80" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
           </div>
         </div>
-      </div>
-    );
-  };
 
-  const NextActionView = () => {
-    const minBalance = readyBalanceMin ? Number(readyBalanceMin) : null;
-    const readyList = model.accountsReady
-      .filter((a: any) => (searchTerm ? a.emailKey.includes(safeLower(searchTerm)) : true))
-      .filter((a: any) => (minBalance === null || Number.isNaN(minBalance) ? true : Number(a.netBalance || 0) >= minBalance))
-      .filter((a: any) => {
-        if (readyStatFilter === "NO_CANCEL") return (a.cancelledBookings || 0) === 0;
-        if (readyStatFilter === "HAS_CANCEL") return (a.cancelledBookings || 0) > 0;
-        return true;
-      })
-      .sort((a: any, b: any) => {
-        const aStat = (a.positiveBookings || 0) - (a.cancelledBookings || 0);
-        const bStat = (b.positiveBookings || 0) - (b.cancelledBookings || 0);
-        const aVal =
-          readySortKey === "balance"
-            ? Number(a.netBalance || 0)
-            : readySortKey === "active"
-            ? Number(a.activeBookingsCount || 0)
-            : aStat;
-        const bVal =
-          readySortKey === "balance"
-            ? Number(b.netBalance || 0)
-            : readySortKey === "active"
-            ? Number(b.activeBookingsCount || 0)
-            : bStat;
-        const diff = aVal - bVal;
-        return readySortDir === "asc" ? diff : -diff;
-      });
-
-    const minEligibleConfirmed = eligibleConfirmedMin ? Number(eligibleConfirmedMin) : null;
-    const minEligibleCompleted = eligibleCompletedMin ? Number(eligibleCompletedMin) : null;
-    const maxEligibleCancelled = eligibleCancelledMax ? Number(eligibleCancelledMax) : null;
-    const eligibleHotels = model.hotelsEligible.filter((h: any) => {
-      if (minEligibleConfirmed !== null && !Number.isNaN(minEligibleConfirmed) && (h.confirmed || 0) < minEligibleConfirmed) return false;
-      if (minEligibleCompleted !== null && !Number.isNaN(minEligibleCompleted) && (h.completed || 0) < minEligibleCompleted) return false;
-      if (maxEligibleCancelled !== null && !Number.isNaN(maxEligibleCancelled) && (h.cancelled || 0) > maxEligibleCancelled) return false;
-      return true;
-    });
-
-    const toggleOne = (emailKey: string) => {
-      setReadySelected((prev) => {
-        const next = { ...prev };
-        if (next[emailKey]) delete next[emailKey];
-        else next[emailKey] = true;
-        return next;
-      });
-    };
-
-    const setAllVisible = (checked: boolean) => {
-      if (!checked) return clearReadySelected();
-      const next: Record<string, boolean> = {};
-      for (const a of readyList) next[a.emailKey] = true;
-      setReadySelected(next);
-    };
-
-    const selectedCount = Object.keys(readySelected).length;
-    const allVisibleSelected = readyList.length > 0 && readyList.every((a: any) => !!readySelected[a.emailKey]);
-
-    const copySelected = async () => {
-      const rows = readyList.filter((a: any) => !!readySelected[a.emailKey]);
-      if (rows.length === 0) {
-        pushToast("warn", "Nothing selected", "Выдели строки и жми Copy.");
-        return;
-      }
-      const payload = accountsToTSV(rows);
-      await copyToClipboard(payload);
-      pushToast("ok", "Copied", `${rows.length} rows → clipboard (email + password).`);
-    };
-
-    const copyOne = async (a: any) => {
-      await copyToClipboard(tsvRow(a.email, a.password || ""));
-      pushToast("ok", "Copied", "email + password");
-    };
-
-    return (
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 animate-in fade-in">
-        <div className={`${theme.panel} rounded-2xl overflow-hidden flex flex-col h-[78vh]`}>
-          <div className="p-6 border-b border-slate-200 bg-white flex justify-between items-start gap-4">
-            <div>
-              <h3 className="font-bold text-slate-900 text-lg">Accounts Ready</h3>
-              <p className="text-xs text-slate-500">
-                Active • Not Blocked • &lt; {state.settings.maxActiveBookings} active • Cooldown ≥ {state.settings.cooldownDays}d
-              </p>
-              <p className="text-[11px] text-slate-600 mt-1 font-mono">
-                Quick export format: <span className="text-slate-500">email\tpassword</span>
-              </p>
-            </div>
-
-            <div className="flex flex-col items-end gap-2">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <div className="border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+            <div className="bg-[#1A1A1A] border-b border-[#333] px-6 py-3 flex flex-wrap gap-3 items-center justify-between">
+              <div className="text-xs text-zinc-500 uppercase tracking-widest">Paid Rewards (Primary)</div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setNextActionMode("table")}
-                  className={`px-3 py-2 rounded-xl border text-xs font-bold ${
-                    nextActionMode === "table"
-                      ? "border-blue-500/40 bg-blue-500/10 text-blue-300"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                  }`}
-                >
-                  TABLE
-                </button>
-                <button
-                  onClick={() => setNextActionMode("list")}
-                  className={`px-3 py-2 rounded-xl border text-xs font-bold ${
-                    nextActionMode === "list"
-                      ? "border-blue-500/40 bg-blue-500/10 text-blue-300"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                  }`}
-                >
-                  LIST
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <div className="bg-emerald-500/10 text-emerald-400 px-3 py-1 rounded-full text-xs font-bold border border-emerald-500/20">
-                  {readyList.length} Ready
-                </div>
-                <button
-                  onClick={copySelected}
-                  className="px-3 py-2 rounded-xl border border-slate-900 bg-slate-900 hover:bg-slate-800 text-slate-100 text-xs font-bold"
-                >
-                  Copy Selected ({selectedCount})
-                </button>
-              </div>
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <span>Min balance</span>
                 <input
-                  value={readyBalanceMin}
-                  onChange={(e) => setReadyBalanceMin((e.target as HTMLInputElement).value)}
-                  placeholder="0"
-                  className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-24"
+                  value={filterPaid}
+                  onChange={(e) => setTableFilters((prev) => ({ ...prev, rewardsPaid: e.target.value }))}
+                  placeholder="Filter paid"
+                  className="bg-[#0A0A0A] border border-[#333] rounded-sm px-3 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-[#F40009] outline-none"
                 />
-              </div>
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <span>Sort</span>
                 <select
-                  value={readySortKey}
-                  onChange={(e) => setReadySortKey((e.target as HTMLSelectElement).value as "balance" | "active" | "stat")}
-                  className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700"
+                  value={`${sortPaid.key}:${sortPaid.dir}`}
+                  onChange={(e) => {
+                    const [key, dir] = e.target.value.split(":");
+                    setTableSorts((prev) => ({ ...prev, rewardsPaid: { key, dir: dir as "asc" | "desc" } }));
+                  }}
+                  className="bg-[#0A0A0A] border border-[#333] rounded-sm px-2 py-1.5 text-xs text-white"
                 >
-                  <option value="balance">Balance</option>
-                  <option value="active">Active</option>
-                  <option value="stat">Stat</option>
-                </select>
-                <button
-                  onClick={() => setReadySortDir((d) => (d === "asc" ? "desc" : "asc"))}
-                  className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600"
-                >
-                  {readySortDir === "asc" ? "▲" : "▼"}
-                </button>
-                <select
-                  value={readyStatFilter}
-                  onChange={(e) => setReadyStatFilter((e.target as HTMLSelectElement).value as "ALL" | "NO_CANCEL" | "HAS_CANCEL")}
-                  className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700"
-                >
-                  <option value="ALL">Stat: All</option>
-                  <option value="NO_CANCEL">No cancels</option>
-                  <option value="HAS_CANCEL">Has cancels</option>
+                  <option value="paidTotal:desc">Paid Total ↓</option>
+                  <option value="paidTotal:asc">Paid Total ↑</option>
+                  <option value="pendingTotal:desc">Pending ↓</option>
+                  <option value="pendingTotal:asc">Pending ↑</option>
+                  <option value="promoTotal:desc">Promo ↓</option>
+                  <option value="promoTotal:asc">Promo ↑</option>
+                  <option value="spentTotal:desc">Spent ↓</option>
+                  <option value="spentTotal:asc">Spent ↑</option>
+                  <option value="daysSinceLast:asc">Days Since Last ↑</option>
+                  <option value="daysSinceLast:desc">Days Since Last ↓</option>
                 </select>
               </div>
             </div>
-          </div>
-
-          {nextActionMode === "table" ? (
-            <div className="flex-1 overflow-auto">
-              <table className="w-full text-left text-sm text-slate-500">
-                <thead className="sticky top-0 bg-white text-xs uppercase font-medium text-slate-500">
+            <div className="overflow-x-auto max-h-[60vh]">
+              <table className="w-full text-left text-sm text-zinc-400">
+                <thead className="bg-[#151515] text-[10px] uppercase font-bold text-zinc-500 sticky top-0">
                   <tr>
-                    <th className="px-4 py-3 w-10">
-                      <input type="checkbox" checked={allVisibleSelected} onChange={(e) => setAllVisible((e.target as HTMLInputElement).checked)} />
-                    </th>
-                    <th className="px-4 py-3">Email</th>
-                    <th className="px-4 py-3">Password</th>
-                    <th className="px-4 py-3">Balance</th>
-                    <th className="px-4 py-3">Active</th>
-                    <th className="px-4 py-3">Stat</th>
-                    <th className="px-4 py-3 text-right">Copy</th>
+                    <th className="px-6 py-3">Account</th>
+                    <th className="px-6 py-3">Medal Score</th>
+                    <th className="px-6 py-3 text-right">Paid</th>
+                    <th className="px-6 py-3 text-right">Pending</th>
+                    <th className="px-6 py-3 text-right">Promo</th>
+                    <th className="px-6 py-3 text-right">Spent</th>
+                    <th className="px-6 py-3 text-right">Balance</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {readyList.map((a: any) => {
-                    const selected = !!readySelected[a.emailKey];
-                    const canc = a.cancelledBookings || 0;
-                    const pos = a.positiveBookings || 0;
-                    return (
-                      <tr
-                        key={a.emailKey}
-                        className={`hover:bg-slate-50 cursor-pointer ${selected ? "bg-blue-500/5" : ""}`}
-                        onClick={(e: any) => {
-                          const tag = (e.target?.tagName || "").toLowerCase();
-                          if (tag === "button" || tag === "input") return;
-                          toggleOne(a.emailKey);
-                        }}
-                      >
-                        <td className="px-4 py-3">
-                          <input
-                            type="checkbox"
-                            checked={selected}
-                            onChange={() => toggleOne(a.emailKey)}
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="text-slate-900 font-semibold">{a.email}</div>
-                          <div className="text-[11px] text-slate-600">Bookings {a.totalBookings} • Tier {a.tier}</div>
-                        </td>
-                        <td className="px-4 py-3 font-mono text-slate-700 text-xs">{a.password ? a.password : <span className="text-rose-300">—</span>}</td>
-                        <td className="px-4 py-3 font-mono text-xs text-slate-700">{money(a.netBalance)}</td>
-                        <td className="px-4 py-3 text-xs text-slate-600">{a.activeBookingsCount}/{state.settings.maxActiveBookings}</td>
-                        <td className="px-4 py-3 text-xs font-mono">
-                          <span className="text-emerald-300">{pos}</span>
-                          <span className="text-slate-600">/</span>
-                          <span className={canc > 0 ? "text-rose-400" : "text-slate-500"}>{canc}</span>
-                        </td>
-                        <td className="px-4 py-3 text-right">
+                <tbody className="divide-y divide-[#222]">
+                  {paidSorted.map((row: any) => (
+                    (() => {
+                      const acc = model.derivedAccounts.find((a: any) => a.emailKey === row.emailKey);
+                      const showPass = rewardPasswordVisible[row.emailKey];
+                      return (
+                    <tr key={row.emailKey} className="hover:bg-[#1A1A1A] transition-colors">
+                      <td className="px-6 py-3 text-xs text-white font-mono">
+                        <button
+                          onClick={() => {
+                            setRewardDetailAccount(row.email);
+                            setRewardDetailOpen(true);
+                          }}
+                          className="hover:text-[#F40009] transition-colors text-left"
+                        >
+                          <div>{row.email}</div>
+                          <div className="text-[10px] text-zinc-500">
+                            Last paid {row.lastPaidOn || "—"} {row.daysSinceLast !== null ? `• ${row.daysSinceLast}d ago` : ""}
+                          </div>
+                        </button>
+                        <div className="mt-2 flex items-center gap-2">
                           <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              copyOne(a);
-                            }}
-                            className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-xl border border-slate-200"
+                            onClick={() => setRewardPasswordVisible((prev) => ({ ...prev, [row.emailKey]: !prev[row.emailKey] }))}
+                            className="text-zinc-500 hover:text-white transition-colors"
+                            title="Show password"
                           >
-                            Copy row
+                            {showPass ? <EyeOff size={12} /> : <Eye size={12} />}
                           </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-
-                  {readyList.length === 0 && (
-                    <tr>
-                      <td colSpan={7} className="p-8 text-center text-slate-500">No accounts ready. Main blockers: Блок/TECH/cooldown/active limit.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="flex-1 overflow-y-auto">
-              <table className="w-full text-left text-sm text-slate-500">
-                <tbody className="divide-y divide-slate-200">
-                  {readyList.map((a: any) => (
-                    <tr key={a.emailKey} className="hover:bg-slate-50 group">
-                      <td className="px-6 py-4">
-                        <div className="text-slate-900 font-bold">{a.email}</div>
-                        <div className="text-xs text-slate-500">Bookings {a.totalBookings} • Active {a.activeBookingsCount}/{state.settings.maxActiveBookings}</div>
-                        <div className="text-xs text-slate-500">Balance {money(a.netBalance)} • Tier {a.tier} • Stat {a.positiveBookings}/{a.cancelledBookings}</div>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={() => copyToClipboard(a.email)} className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-xl border border-slate-200">Copy Email</button>
-                          <button onClick={() => copyToClipboard(a.password || "")} className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-xl border border-slate-200">Copy Pass</button>
-                          <button onClick={() => copyOne(a)} className="text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-200 px-3 py-2 rounded-xl border border-blue-500/30">Copy Both</button>
+                          {showPass && <span className="text-[10px] text-blue-300 font-mono">{acc?.password || "NO_PASS"}</span>}
                         </div>
                       </td>
+                      <td className="px-6 py-3 text-xs text-zinc-300 font-mono">{row.medal}</td>
+                      <td className="px-6 py-3 text-right text-xs font-mono text-green-400">{money(row.paidTotal)}</td>
+                      <td className="px-6 py-3 text-right text-xs font-mono text-yellow-300">{money(row.pendingTotal)}</td>
+                      <td className="px-6 py-3 text-right text-xs font-mono text-blue-400">{money(row.promoTotal)}</td>
+                      <td className="px-6 py-3 text-right text-xs font-mono text-rose-300">{money(row.spentTotal)}</td>
+                      <td className="px-6 py-3 text-right text-xs font-mono text-white">{money(row.currentBalance)}</td>
                     </tr>
+                      );
+                    })()
                   ))}
-                  {readyList.length === 0 && (
+                  {paidSorted.length === 0 && (
                     <tr>
-                      <td colSpan={2} className="p-8 text-center text-slate-500">No accounts ready. Main blockers: Блок/TECH/cooldown/active limit.</td>
+                      <td colSpan={7} className="px-6 py-6 text-center text-xs text-zinc-600">No reward activity yet.</td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
-          )}
-        </div>
-
-        <div className={`${theme.panel} rounded-2xl overflow-hidden flex flex-col h-[78vh]`}>
-          <div className="p-6 border-b border-slate-200 bg-white flex justify-between items-center">
-            <div>
-              <h3 className="font-bold text-slate-900 text-lg">Hotels Eligible</h3>
-              <p className="text-xs text-slate-500">Confirmed &gt; 0 • Cancelled ≤ 2 • Not blocked</p>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-slate-500">
-              <span>Min confirmed</span>
-              <input
-                value={eligibleConfirmedMin}
-                onChange={(e) => setEligibleConfirmedMin((e.target as HTMLInputElement).value)}
-                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
-              />
-              <span>Min completed</span>
-              <input
-                value={eligibleCompletedMin}
-                onChange={(e) => setEligibleCompletedMin((e.target as HTMLInputElement).value)}
-                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
-              />
-              <span>Max cancelled</span>
-              <input
-                value={eligibleCancelledMax}
-                onChange={(e) => setEligibleCancelledMax((e.target as HTMLInputElement).value)}
-                className="bg-white border border-slate-200 rounded px-2 py-1 text-slate-700 w-20"
-              />
-            </div>
-            <div className="bg-blue-500/10 text-blue-400 px-3 py-1 rounded-full text-xs font-bold border border-blue-500/20">
-              {eligibleHotels.length} Eligible
-            </div>
           </div>
-          <div className="flex-1 overflow-y-auto">
-            <table className="w-full text-left text-sm text-slate-500">
-              <tbody className="divide-y divide-slate-200">
-                {eligibleHotels.map((h: any) => (
-                  <tr key={h.hotelId} className="hover:bg-slate-50">
-                    <td className="px-6 py-4">
-                      <div className="text-slate-900 font-bold">{h.name}</div>
-                      <div className="text-xs text-slate-500 font-mono">{h.hotelId}</div>
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="text-xs">
-                        <span className="text-emerald-400">{h.confirmed} Conf</span>
-                        <span className="text-slate-600 mx-1">/</span>
-                        <span className="text-blue-400">{h.completed} Comp</span>
-                        <span className="text-slate-600 mx-1">/</span>
-                        <span className="text-rose-400">{h.cancelled} Canc</span>
-                        <span className="text-slate-600 mx-1">•</span>
-                        <span className="text-slate-700">{h.totalBookings} total</span>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {eligibleHotels.length === 0 && (
+          <div className="border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+            <div className="bg-[#1A1A1A] border-b border-[#333] px-6 py-3 flex flex-wrap gap-3 items-center justify-between">
+              <div className="text-xs text-zinc-500 uppercase tracking-widest">Pending Rewards</div>
+              <div className="flex items-center gap-2">
+                <input
+                  value={filterPending}
+                  onChange={(e) => setTableFilters((prev) => ({ ...prev, rewardsPending: e.target.value }))}
+                  placeholder="Filter pending"
+                  className="bg-[#0A0A0A] border border-[#333] rounded-sm px-3 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-[#F40009] outline-none"
+                />
+                <select
+                  value={`${sortPending.key}:${sortPending.dir}`}
+                  onChange={(e) => {
+                    const [key, dir] = e.target.value.split(":");
+                    setTableSorts((prev) => ({ ...prev, rewardsPending: { key, dir: dir as "asc" | "desc" } }));
+                  }}
+                  className="bg-[#0A0A0A] border border-[#333] rounded-sm px-2 py-1.5 text-xs text-white"
+                >
+                  <option value="eta:asc">ETA Soonest</option>
+                  <option value="eta:desc">ETA Latest</option>
+                  <option value="rewardAmount:desc">Amount ↓</option>
+                  <option value="rewardAmount:asc">Amount ↑</option>
+                </select>
+              </div>
+            </div>
+            <div className="overflow-x-auto max-h-[60vh]">
+              <table className="w-full text-left text-sm text-zinc-400">
+                <thead className="bg-[#151515] text-[10px] uppercase font-bold text-zinc-500 sticky top-0">
                   <tr>
-                    <td colSpan={2} className="p-8 text-center text-slate-500">No hotels eligible yet. Нужно confirmed и low canc.</td>
+                    <th className="px-6 py-3">Account</th>
+                    <th className="px-6 py-3">Booking</th>
+                    <th className="px-6 py-3">ETA</th>
+                    <th className="px-6 py-3 text-right">Amount</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-[#222]">
+                  {pendingSorted.map((b: any) => (
+                    <tr key={b.bookingId} className="hover:bg-[#1A1A1A] transition-colors">
+                      <td className="px-6 py-3 text-xs text-white font-mono">
+                        <button
+                          onClick={() => {
+                            setRewardDetailAccount(b.email);
+                            setRewardDetailOpen(true);
+                          }}
+                          className="hover:text-[#F40009] transition-colors"
+                        >
+                          {b.email}
+                        </button>
+                      </td>
+                      <td className="px-6 py-3 text-xs text-zinc-500 font-mono">{b.bookingNo}</td>
+                      <td className="px-6 py-3 text-xs text-zinc-400 font-mono">{b.eta}</td>
+                      <td className="px-6 py-3 text-right text-xs font-mono text-green-400">{money(b.rewardAmount)}</td>
+                    </tr>
+                  ))}
+                  {pendingSorted.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="px-6 py-6 text-center text-xs text-zinc-600">No pending rewards.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
     );
   };
 
-  const NAV: any[] = [
+  const NextActionView = () => (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="bg-[#111] border border-[#333] rounded-sm p-6">
+          <PanelHeader
+            icon={Target}
+            title="Accounts Ready"
+            subtitle="Select accounts for fast copy"
+            actions={(
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSelectedNextAction(new Set(model.accountsReady.map((a: any) => a.emailKey)))}
+                  className="px-2 py-1 text-[10px] uppercase rounded-sm border border-[#333] text-zinc-400 hover:text-white"
+                >
+                  Select All
+                </button>
+                <button
+                  onClick={() => setSelectedNextAction(new Set())}
+                  className="px-2 py-1 text-[10px] uppercase rounded-sm border border-[#333] text-zinc-400 hover:text-white"
+                >
+                  Clear
+                </button>
+                <button
+                  onClick={() => {
+                    const selected = model.accountsReady.filter((a: any) => selectedNextAction.has(a.emailKey));
+                    if (selected.length === 0) {
+                      pushToast("warn", "No accounts selected");
+                      return;
+                    }
+                    const text = accountsToTSV(selected);
+                    copyToClipboard(text);
+                    pushToast("ok", "Copied accounts", `${selected.length} rows`);
+                  }}
+                  className="px-3 py-1 text-[10px] uppercase rounded-sm border border-[#F40009] text-white bg-[#F40009]/80 hover:bg-[#F40009]"
+                >
+                  Copy Selected
+                </button>
+              </div>
+            )}
+          />
+          <div className="space-y-2">
+            {model.accountsReady.slice(0, 16).map((a: any) => {
+              const selected = selectedNextAction.has(a.emailKey);
+              return (
+                <div
+                  key={a.emailKey}
+                  onClick={() => {
+                    setSelectedNextAction((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(a.emailKey)) next.delete(a.emailKey);
+                      else next.add(a.emailKey);
+                      return next;
+                    });
+                  }}
+                  className={`flex items-center justify-between border rounded-sm px-3 py-2 cursor-pointer transition-colors ${
+                    selected ? "bg-[#1A1A1A] border-[#F40009]" : "bg-[#0F0F0F] border-[#222]"
+                  }`}
+                >
+                  <div>
+                    <div className="text-xs text-white font-mono">{a.email}</div>
+                    <div className="text-[10px] text-zinc-500">{a.confirmedBookings} confirmed • {a.activeBookingsCount} active</div>
+                  </div>
+                  <div className="text-xs text-green-400 font-mono">{money(a.netBalance)}</div>
+                </div>
+              );
+            })}
+            {model.accountsReady.length === 0 && <div className="text-xs text-zinc-600">No ready accounts available.</div>}
+          </div>
+        </div>
+        <div className="bg-[#111] border border-[#333] rounded-sm p-6">
+          <PanelHeader icon={Building2} title="Eligible Hotels" subtitle="Confirmed > 0, cancel ≤ 2, not blocked" />
+          <div className="space-y-2">
+            {model.hotelsEligible.slice(0, 12).map((h: any) => {
+              const daysSince = h.lastBookingAt ? daysDiff(h.lastBookingAt) : null;
+              return (
+                <div key={h.hotelId} className="flex items-center justify-between border border-[#222] rounded-sm px-3 py-2 bg-[#0F0F0F]">
+                  <div>
+                    <div className="text-xs text-white font-mono truncate max-w-[220px]">{h.name}</div>
+                    <div className="text-[10px] text-zinc-500">
+                      {h.confirmed} conf • {h.cancelled} canc • {money(h.spent)}
+                    </div>
+                    <div className="text-[10px] text-zinc-600">
+                      Last booking {h.lastBookingAt || "—"} {daysSince !== null ? `• ${daysSince}d ago` : ""}
+                    </div>
+                  </div>
+                  <div className="text-xs text-blue-300 font-mono">{h.reliability.toFixed(0)}%</div>
+                </div>
+              );
+            })}
+            {model.hotelsEligible.length === 0 && <div className="text-xs text-zinc-600">No eligible hotels right now.</div>}
+          </div>
+        </div>
+      </div>
+
+      <div className="border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+        <div className="bg-[#1A1A1A] border-b border-[#333] px-6 py-3 text-xs text-zinc-500 uppercase tracking-widest">Action Playbook</div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-6">
+          {[
+            { title: "Select accounts", body: "Use Command Center to select the highest balance accounts for new bookings." },
+            { title: "Pick hotels", body: "Prioritize hotels with high reliability and low cancellation rates." },
+            { title: "Track rewards", body: "Monitor ETA and paid rewards in Reward Ops dashboard." },
+          ].map((card) => (
+            <div key={card.title} className="border border-[#222] rounded-sm p-4 bg-[#0F0F0F]">
+              <div className="text-xs text-white font-bold uppercase tracking-widest mb-2">{card.title}</div>
+              <div className="text-xs text-zinc-500 leading-relaxed">{card.body}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  const SheetView = () => {
+    const filter = tableFilters.sheet;
+    const sort = tableSorts.sheet;
+    const filtered = model.derivedAccounts.filter((a: any) => {
+      if (!filter) return true;
+      const haystack = `${a.email} ${a.tier} ${a.password ?? ""}`.toLowerCase();
+      return haystack.includes(filter.toLowerCase());
+    });
+    const rows = sortRows(filtered, sort.key, sort.dir);
+
+    return (
+    <div className="space-y-6">
+      <div className="bg-[#111] border border-[#333] rounded-sm p-6">
+        <PanelHeader
+          icon={Sheet}
+          title="Sheet Mode"
+          subtitle="Tabular export view for quick copy/paste"
+          actions={
+            <button onClick={() => downloadCSV("accounts_sheet.csv", model.derivedAccounts)} className="px-3 py-1.5 bg-[#222] border border-[#333] rounded-sm text-[10px] uppercase tracking-widest text-zinc-300 hover:text-white">
+              Export CSV
+            </button>
+          }
+        />
+        <div className="flex flex-wrap gap-2">
+          <DataPill label="Accounts" value={model.derivedAccounts.length} />
+          <DataPill label="Missing Pass" value={totals.missingPasswords} color="#FACC15" />
+          <DataPill label="Gold/Plat" value={model.premium.length} color="#FACC15" />
+        </div>
+      </div>
+
+      <div className="border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+        <div className="bg-[#1A1A1A] border-b border-[#333] px-6 py-3 flex flex-wrap gap-3 items-center justify-between">
+          <div className="text-xs text-zinc-500 uppercase tracking-widest">Account Sheet</div>
+          <div className="flex items-center gap-2">
+            <input
+              value={filter}
+              onChange={(e) => setTableFilters((prev) => ({ ...prev, sheet: e.target.value }))}
+              placeholder="Filter accounts"
+              className="bg-[#0A0A0A] border border-[#333] rounded-sm px-3 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-[#F40009] outline-none"
+            />
+            <select
+              value={`${sort.key}:${sort.dir}`}
+              onChange={(e) => {
+                const [key, dir] = e.target.value.split(":");
+                setTableSorts((prev) => ({ ...prev, sheet: { key, dir: dir as "asc" | "desc" } }));
+              }}
+              className="bg-[#0A0A0A] border border-[#333] rounded-sm px-2 py-1.5 text-xs text-white"
+            >
+              <option value="email:asc">Email A-Z</option>
+              <option value="email:desc">Email Z-A</option>
+              <option value="netBalance:desc">Net Balance ↓</option>
+              <option value="netBalance:asc">Net Balance ↑</option>
+              <option value="totalBookings:desc">Bookings ↓</option>
+              <option value="totalBookings:asc">Bookings ↑</option>
+            </select>
+          </div>
+        </div>
+        <div className="overflow-x-auto max-h-[70vh]">
+          <table className="w-full text-left text-sm text-zinc-400">
+            <thead className="bg-[#151515] text-[10px] uppercase font-bold text-zinc-500 sticky top-0">
+              <tr>
+                <th className="px-6 py-3">Email</th>
+                <th className="px-6 py-3">Password</th>
+                <th className="px-6 py-3">Tier</th>
+                <th className="px-6 py-3">Net</th>
+                <th className="px-6 py-3">Bookings</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#222]">
+              {rows.map((a: any) => (
+                <tr key={a.emailKey} className="hover:bg-[#1A1A1A] transition-colors">
+                  <td className="px-6 py-3 text-xs text-white font-mono">{a.email}</td>
+                  <td className="px-6 py-3 text-xs text-zinc-500 font-mono">{a.password || "—"}</td>
+                  <td className="px-6 py-3 text-xs">
+                    {a.tier === "Gold" && <Badge kind="gold">GOLD</Badge>}
+                    {a.tier === "Platinum" && <Badge kind="plat">PLAT</Badge>}
+                    {a.tier === "Standard" && <Badge>STD</Badge>}
+                  </td>
+                  <td className="px-6 py-3 text-xs text-zinc-300 font-mono">{money(a.netBalance)}</td>
+                  <td className="px-6 py-3 text-xs text-zinc-500 font-mono">{a.totalBookings}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    );
+  };
+
+  const NAV_ITEMS = [
     { id: "overview", icon: LayoutDashboard, label: "Overview" },
+    { id: "command_center", icon: Target, label: "Command Center" },
+    { id: "hotel_intel", icon: Building2, label: "Hotel Intel" },
+    { id: "hotels", icon: Building, label: "Hotels" },
     { id: "bookings", icon: BookOpen, label: "Bookings" },
     { id: "database", icon: Users, label: "Database" },
     { id: "rawdata", icon: Database, label: "RawData" },
     { id: "sheet", icon: Sheet, label: "Sheet" },
-    { id: "hotels", icon: Building2, label: "Hotels" },
     { id: "spent", icon: Wallet, label: "Spent" },
-    { id: "reward", icon: Wallet, label: "Reward" },
+    { id: "reward", icon: Zap, label: "Rewards" },
     { id: "next_action", icon: Activity, label: "Next Action" },
   ];
 
   return (
-    <div className={`min-h-screen ${theme.bg} ${themeMode === "dark" ? "theme-dark" : "theme-light"} font-sans selection:bg-blue-500/30 flex`}>
+    <div className="min-h-screen bg-black text-zinc-300 font-sans selection:bg-[#F40009] selection:text-white flex overflow-hidden">
       <style>{`
-        .theme-dark .text-slate-900 { color: #E2E8F0; }
-        .theme-dark .text-slate-700 { color: #CBD5F5; }
-        .theme-dark .text-slate-600 { color: #94A3B8; }
-        .theme-dark .text-slate-500 { color: #64748B; }
-        .theme-dark .text-slate-400 { color: #94A3B8; }
-        .theme-dark .text-slate-300 { color: #A8B3C7; }
-        .theme-dark .bg-white { background-color: #121826; }
-        .theme-dark .bg-slate-50 { background-color: #0F172A; }
-        .theme-dark .border-slate-200 { border-color: #1E293B; }
-        .theme-dark .hover\\:bg-slate-50:hover { background-color: #1E293B; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: #000; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+        body { background-color: #000; }
       `}</style>
-      {/* Sidebar */}
-      <aside className={`fixed left-0 top-0 h-full w-20 ${theme.sidebar} border-r flex flex-col items-center py-8 z-20`}>
-        <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl mb-10 shadow-lg shadow-blue-500/20 flex items-center justify-center font-bold text-white text-xl">Ops</div>
 
-        <nav className="flex flex-col gap-6 w-full">
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`p-3 mx-auto rounded-xl transition-all duration-300 relative group ${
-                activeTab === item.id
-                  ? "bg-blue-600/10 text-blue-500"
-                  : themeMode === "dark"
-                  ? "text-slate-500 hover:text-slate-200 hover:bg-slate-800/60"
-                  : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"
-              }`}
-              title={item.label}
-            >
-              <item.icon size={22} />
-              {activeTab === item.id && <div className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-500 rounded-l-full" />}
-              <div
-                className={`absolute left-16 text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 border shadow-sm ml-2 ${
-                  themeMode === "dark"
-                    ? "bg-[#0B1220] border-slate-800 text-slate-200"
-                    : "bg-white border-slate-200 text-slate-600"
-                }`}
-              >
-                {item.label}
-              </div>
-            </button>
-          ))}
+      {/* SIDEBAR */}
+      <aside className="w-20 bg-[#050505] border-r border-[#222] flex flex-col items-center py-6 z-20 shrink-0">
+        <div className="w-10 h-10 bg-[#F40009] text-white flex items-center justify-center font-bold text-xl tracking-tighter rounded-sm mb-12 shadow-[0_0_20px_rgba(244,0,9,0.4)]">//</div>
+        <nav className="flex flex-col gap-6 w-full items-center">
+          {NAV_ITEMS.map((item) => {
+             const active = activeTab === item.id;
+             return (
+              <button key={item.id} onClick={() => setActiveTab(item.id)} className={`relative group flex items-center justify-center w-12 h-12 rounded-sm transition-all duration-300 ${active ? "bg-[#111] text-white" : "text-zinc-600 hover:text-zinc-300 hover:bg-[#111]"}`}>
+                <item.icon size={22} strokeWidth={active ? 2 : 1.5} />
+                {active && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 bg-[#F40009]" />}
+                <div className="absolute left-14 bg-[#222] text-white text-[10px] uppercase font-bold tracking-widest px-3 py-1 rounded-sm opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap border border-[#333] z-50">{item.label}</div>
+              </button>
+             );
+          })}
         </nav>
-
-        <div className="mt-auto flex flex-col gap-3">
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className={`p-3 mx-auto rounded-xl ${
-              themeMode === "dark"
-                ? "text-slate-500 hover:text-slate-200 hover:bg-slate-800/60"
-                : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"
-            }`}
-            title="Settings"
-          >
-            <Settings size={22} />
-          </button>
-          <button
-            onClick={() => setAuditOpen(true)}
-            className={`p-3 mx-auto rounded-xl ${
-              themeMode === "dark"
-                ? "text-slate-500 hover:text-slate-200 hover:bg-slate-800/60"
-                : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"
-            }`}
-            title="Audit"
-          >
-            <History size={22} />
-          </button>
+        <div className="mt-auto flex flex-col gap-4">
+             <button onClick={() => setGlobalActionsOpen(true)} className="text-zinc-600 hover:text-white transition-colors"><Command size={20} /></button>
+             <button onClick={() => setSettingsOpen(true)} className="text-zinc-600 hover:text-white transition-colors"><Settings size={20} /></button>
+             <button onClick={() => setAuditOpen(true)} className="text-zinc-600 hover:text-white transition-colors"><History size={20} /></button>
         </div>
       </aside>
 
-      {/* Main */}
-      <main className="pl-20 flex-1">
-        <header className={`h-20 border-b ${theme.header} flex items-center justify-between px-8 backdrop-blur sticky top-0 z-10`}>
-          <div>
-            <h1 className={`text-xl font-bold flex items-center gap-2 uppercase tracking-wide ${theme.text}`}>{activeTab.replace("_", " ")}</h1>
-            <p className={`text-xs font-mono mt-1 ${theme.textDim}`}>
-              ACC: {state.database.length} • HOTELS: {state.hotels.length} • BOOKINGS: {state.bookings.length} • READY: {model.accountsReady.length}
-            </p>
-          </div>
+      {/* MAIN CONTENT */}
+      <main className="flex-1 flex flex-col h-screen overflow-hidden bg-black relative">
+         <div className="absolute top-0 left-0 w-full h-[300px] bg-gradient-to-b from-[#111] to-transparent pointer-events-none opacity-50" />
+         <header className="h-16 flex items-center justify-between px-8 border-b border-[#222] bg-black/80 backdrop-blur-md z-10 shrink-0">
+             <div className="flex items-center gap-4">
+                 <h1 className="text-lg font-bold text-white uppercase tracking-[0.2em]">{activeTab.replace("_", " ")}</h1>
+                 <div className="h-4 w-[1px] bg-[#333]" />
+                 <div className="flex gap-4 text-[10px] text-zinc-500 font-mono">
+                     <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>ONLINE</span>
+                     <span>v5.6.0</span>
+                 </div>
+             </div>
+             <div className="flex items-center gap-4">
+                 <div className="relative group">
+                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600 group-focus-within:text-[#F40009] transition-colors" size={14} />
+                     <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="SEARCH DATABASE" 
+                       className="bg-[#111] border border-[#333] rounded-full pl-9 pr-4 py-1.5 text-xs text-white placeholder:text-zinc-700 focus:border-[#F40009] focus:w-64 w-48 transition-all outline-none" />
+                 </div>
+                 <button onClick={handleExportJSON} className="p-2 hover:bg-[#222] rounded-sm text-zinc-400 hover:text-white transition-colors" title="Export JSON"><FileJson size={18}/></button>
+                 <button onClick={() => setImportOpen(true)} className="p-2 hover:bg-[#222] rounded-sm text-zinc-400 hover:text-white transition-colors" title="Import JSON"><Download size={18}/></button>
+             </div>
+         </header>
 
-          <div className="flex items-center gap-3">
-            <div className="relative group">
-              <Search className={`absolute left-3 top-1/2 -translate-y-1/2 ${themeMode === "dark" ? "text-slate-500 group-focus-within:text-blue-400" : "text-slate-500 group-focus-within:text-blue-500"} transition-colors`} size={16} />
-              <input
-                type="text"
-                placeholder="Global Search..."
-                className={`rounded-full pl-10 pr-4 py-2 text-sm focus:outline-none focus:border-blue-500 w-64 transition-all focus:w-96 shadow-sm ${theme.input}`}
-                value={searchTerm}
-                onChange={(e) => setSearchTerm((e.target as HTMLInputElement).value)}
-              />
-            </div>
-
-            <button
-              onClick={() => setThemeMode(themeMode === "dark" ? "light" : "dark")}
-              className={`px-3 py-2 rounded-xl border text-sm font-bold inline-flex items-center gap-2 ${theme.button}`}
-              title="Toggle theme"
-            >
-              {themeMode === "dark" ? "Light" : "Dark"}
-            </button>
-            <button
-              onClick={handleExport}
-              className={`px-3 py-2 rounded-xl border text-sm font-bold inline-flex items-center gap-2 shadow-sm ${theme.button}`}
-            >
-              <Download size={16} /> Export JSON
-            </button>
-            <button
-              onClick={() => {
-                setImportOpen(true);
-                setImportError("");
-                setImportPayload("");
-              }}
-              className={`px-3 py-2 rounded-xl border text-sm font-bold inline-flex items-center gap-2 shadow-sm ${theme.button}`}
-            >
-              Import JSON
-            </button>
-
-            <button
-              onClick={() => setSettingsOpen(true)}
-              className={`px-3 py-2 rounded-xl border text-sm font-bold inline-flex items-center gap-2 shadow-sm ${theme.button}`}
-            >
-              <Settings size={16} /> Settings
-            </button>
-          </div>
-        </header>
-
-        <div className="p-8 max-w-[1900px] mx-auto">
-          {activeTab === "overview" && <OverviewView />}
-          {activeTab === "bookings" && <BookingsView />}
-          {activeTab === "database" && <DatabaseView />}
-          {activeTab === "rawdata" && <RawDataView />}
-          {activeTab === "sheet" && <RawDataView />}
-          {activeTab === "hotels" && <HotelsView />}
-          {activeTab === "spent" && <SpentView />}
-          {activeTab === "reward" && <RewardView />}
-          {activeTab === "next_action" && <NextActionView />}
-        </div>
+         <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+             <div className="max-w-[1600px] mx-auto pb-20">
+                {activeTab === "overview" && <OverviewView />}
+                {activeTab === "database" && <DatabaseView />}
+                {activeTab === "bookings" && <BookingsView />}
+                {activeTab === "rawdata" && <RawDataView />}
+                {activeTab === "sheet" && <SheetView />}
+                {activeTab === "command_center" && <CommandCenterView />}
+                {activeTab === "hotel_intel" && <HotelIntelligenceView />}
+                {activeTab === "hotels" && <HotelsView />}
+                {activeTab === "spent" && <SpentView />}
+                {activeTab === "reward" && <RewardView />}
+                {activeTab === "next_action" && <NextActionView />}
+             </div>
+         </div>
       </main>
 
-      {/* Settings */}
-      <Modal open={settingsOpen} title="Rules & Automation Settings" onClose={() => setSettingsOpen(false)} themeMode={themeMode}>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {[
-            { k: "goldThreshold", label: "Gold threshold ($)", type: "number" },
-            { k: "platinumAfterDays", label: "Platinum after days", type: "number" },
-            { k: "cooldownDays", label: "Cooldown days between bookings", type: "number" },
-            { k: "maxActiveBookings", label: "Max active bookings per account", type: "number" },
-            { k: "techBlockConsecutive", label: "Account TECH block streak", type: "number" },
-            { k: "techBlockTotal", label: "Account TECH block total", type: "number" },
-            { k: "hotelTechBlockTotal", label: "Hotel TECH block total", type: "number" },
-          ].map((x: any) => (
-            <div key={x.k} className="border border-slate-200 rounded-xl p-4 bg-white">
-              <div className="text-xs text-slate-500 font-bold uppercase">{x.label}</div>
-              <input
-                type={x.type}
-                className="mt-2 w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-700 outline-none focus:border-blue-500"
-                value={state.settings[x.k]}
-                onChange={(e) => setSettings({ [x.k]: Number((e.target as HTMLInputElement).value) })}
-              />
+      <Toasts toasts={toasts} onDismiss={(id: string) => setToasts((p) => p.filter((t: any) => t.id !== id))} />
+
+      <Modal open={settingsOpen} title="System Configuration" onClose={() => setSettingsOpen(false)}>
+           <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                     <div className="bg-[#050505] p-4 rounded-sm border border-[#222]">
+                         <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block mb-2">Gold Threshold</label>
+                         <input type="number" value={state.settings.goldThreshold} onChange={(e) => setSettings({goldThreshold: Number(e.target.value)})} className="w-full bg-black border border-[#333] p-2 text-white font-mono text-sm focus:border-[#F40009] outline-none" />
+                     </div>
+                     <div className="bg-[#050505] p-4 rounded-sm border border-[#222]">
+                         <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block mb-2">Max Active Bookings</label>
+                         <input type="number" value={state.settings.maxActiveBookings} onChange={(e) => setSettings({maxActiveBookings: Number(e.target.value)})} className="w-full bg-black border border-[#333] p-2 text-white font-mono text-sm focus:border-[#F40009] outline-none" />
+                     </div>
+                     <div className="bg-[#050505] p-4 rounded-sm border border-[#222]">
+                         <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block mb-2">Cooldown Days</label>
+                         <input type="number" value={state.settings.cooldownDays} onChange={(e) => setSettings({cooldownDays: Number(e.target.value)})} className="w-full bg-black border border-[#333] p-2 text-white font-mono text-sm focus:border-[#F40009] outline-none" />
+                     </div>
+                     <div className="bg-[#050505] p-4 rounded-sm border border-[#222]">
+                         <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block mb-2">Platinum After Days</label>
+                         <input type="number" value={state.settings.platinumAfterDays} onChange={(e) => setSettings({platinumAfterDays: Number(e.target.value)})} className="w-full bg-black border border-[#333] p-2 text-white font-mono text-sm focus:border-[#F40009] outline-none" />
+                     </div>
+                </div>
+                <div className="bg-[#050505] p-4 rounded-sm border border-[#222] flex justify-between items-center">
+                    <div>
+                        <div className="text-sm font-bold text-white">Auto-Create Entities</div>
+                        <div className="text-xs text-zinc-500">Create missing accounts during paste import</div>
+                    </div>
+                    <div className={`w-10 h-5 rounded-full relative cursor-pointer transition-colors ${state.settings.autoCreateFromImport ? "bg-[#F40009]" : "bg-[#333]"}`} onClick={() => setSettings({autoCreateFromImport: !state.settings.autoCreateFromImport})}>
+                        <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${state.settings.autoCreateFromImport ? "left-6" : "left-1"}`} />
+                    </div>
+                </div>
+                <div className="bg-[#050505] p-4 rounded-sm border border-[#222] flex justify-between items-center">
+                    <div>
+                        <div className="text-sm font-bold text-white">Auto-Write TECH Blocks</div>
+                        <div className="text-xs text-zinc-500">Auto-flag accounts/hotels after TECH threshold</div>
+                    </div>
+                    <div className={`w-10 h-5 rounded-full relative cursor-pointer transition-colors ${state.settings.autoWriteTechBlocks ? "bg-[#F40009]" : "bg-[#333]"}`} onClick={() => setSettings({autoWriteTechBlocks: !state.settings.autoWriteTechBlocks})}>
+                        <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${state.settings.autoWriteTechBlocks ? "left-6" : "left-1"}`} />
+                    </div>
+                </div>
+           </div>
+      </Modal>
+
+      <Modal open={globalActionsOpen} title="Global Command Center" onClose={() => setGlobalActionsOpen(false)}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <button onClick={() => copyAllEmails()} className="p-4 bg-[#111] border border-[#333] hover:border-[#F40009] rounded-sm text-left group transition-all">
+                  <div className="text-white font-bold uppercase text-sm mb-1 group-hover:text-[#F40009]">Copy All Emails</div>
+                  <div className="text-xs text-zinc-500">Copy entire database email list to clipboard</div>
+              </button>
+              <button onClick={() => copyAllEmails((a) => a.tier === "Gold" || a.tier === "Platinum")} className="p-4 bg-[#111] border border-[#333] hover:border-[#F40009] rounded-sm text-left group transition-all">
+                  <div className="text-white font-bold uppercase text-sm mb-1 group-hover:text-[#F40009]">Copy Gold/Plat</div>
+                  <div className="text-xs text-zinc-500">Filter and copy premium accounts only</div>
+              </button>
+              <button onClick={() => downloadCSV("database_export.csv", state.database)} className="p-4 bg-[#111] border border-[#333] hover:border-[#F40009] rounded-sm text-left group transition-all">
+                  <div className="text-white font-bold uppercase text-sm mb-1 group-hover:text-[#F40009]">Export Full CSV</div>
+                  <div className="text-xs text-zinc-500">Download complete database backup</div>
+              </button>
+              <button onClick={() => downloadCSV("bookings_export.csv", state.bookings)} className="p-4 bg-[#111] border border-[#333] hover:border-[#F40009] rounded-sm text-left group transition-all">
+                  <div className="text-white font-bold uppercase text-sm mb-1 group-hover:text-[#F40009]">Export Bookings</div>
+                  <div className="text-xs text-zinc-500">Download booking history</div>
+              </button>
+              <button onClick={handleExportJSON} className="p-4 bg-[#111] border border-[#333] hover:border-[#F40009] rounded-sm text-left group transition-all">
+                  <div className="text-white font-bold uppercase text-sm mb-1 group-hover:text-[#F40009]">Export JSON</div>
+                  <div className="text-xs text-zinc-500">Snapshot settings + per-account data</div>
+              </button>
+          </div>
+      </Modal>
+
+      <Modal open={importOpen} title="JSON Import" onClose={() => setImportOpen(false)}>
+          <div className="space-y-4">
+              <div className="p-4 bg-[#220000] border border-red-900/30 rounded-sm text-red-200 text-xs">
+                  <AlertTriangle size={14} className="inline mr-2" />
+                  Warning: Importing will overwrite current state database.
+              </div>
+              <textarea value={importPayload} onChange={(e) => setImportPayload(e.target.value)} className="w-full h-64 bg-black border border-[#333] p-4 font-mono text-xs text-zinc-300 outline-none focus:border-[#F40009]" placeholder="{ JSON PAYLOAD }" />
+              {importError && <div className="text-xs text-red-400">{importError}</div>}
+              <button onClick={() => handleImport(JSON.parse(importPayload))} className="w-full py-3 bg-[#F40009] text-white font-bold uppercase tracking-widest hover:bg-red-600 transition-colors">Execute Restore</button>
+          </div>
+      </Modal>
+
+      <Modal open={auditOpen} title="Audit Log (last 400 events)" onClose={() => setAuditOpen(false)}>
+        <div className="space-y-3">
+          {(state.audit || []).slice().reverse().map((entry: any) => (
+            <div key={entry.id} className="border border-[#222] rounded-sm p-3 bg-[#0F0F0F]">
+              <div className="text-xs text-zinc-500 font-mono">{entry.at}</div>
+              <div className="text-xs text-white font-bold uppercase tracking-widest mt-1">{entry.type}</div>
+              <div className="text-xs text-zinc-400 mt-1">{entry.msg}</div>
             </div>
           ))}
-
-          <div className="border border-slate-200 rounded-xl p-4 bg-white md:col-span-2">
-            <div className="text-xs text-slate-500 font-bold uppercase mb-3">Booking Reward Types</div>
-            <div className="space-y-2">
-              {getRewardTypes(state.settings).map((t: any, idx: number) => (
-                <div key={`${t.name}-${idx}`} className="grid grid-cols-1 md:grid-cols-6 gap-2 items-center">
-                  <input
-                    value={t.name}
-                    onChange={(e) => {
-                      const name = (e.target as HTMLInputElement).value;
-                      setSettings({
-                        rewardTypes: getRewardTypes(state.settings).map((r: any, i: number) =>
-                          i === idx ? { ...r, name } : r
-                        ),
-                      });
-                    }}
-                    placeholder="Type name"
-                    className="md:col-span-3 bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-700 text-sm"
-                  />
-                  <input
-                    type="number"
-                    value={t.days}
-                    onChange={(e) => {
-                      const days = Number((e.target as HTMLInputElement).value);
-                      setSettings({
-                        rewardTypes: getRewardTypes(state.settings).map((r: any, i: number) =>
-                          i === idx ? { ...r, days } : r
-                        ),
-                      });
-                    }}
-                    placeholder="Days after CheckOut"
-                    className="md:col-span-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-700 text-sm"
-                  />
-                  <button
-                    onClick={() => {
-                      const next = getRewardTypes(state.settings).filter((_: any, i: number) => i !== idx);
-                      setSettings({ rewardTypes: next.length ? next : DEFAULT_REWARD_TYPES.map((r) => ({ ...r })) });
-                    }}
-                    className="md:col-span-1 px-3 py-2 rounded-lg border border-rose-200 text-rose-600 text-sm hover:bg-rose-50"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
-            <div className="mt-3">
-              <button
-                onClick={() => {
-                  setSettings({
-                    rewardTypes: [...getRewardTypes(state.settings), { name: "NewType", days: 64 }],
-                  });
-                }}
-                className="px-3 py-2 rounded-lg border border-blue-200 text-blue-600 text-sm hover:bg-blue-50"
-              >
-                Add Type
-              </button>
-            </div>
-          </div>
-
-          <div className="border border-slate-200 rounded-xl p-4 bg-white">
-            <div className="text-xs text-slate-500 font-bold uppercase">Auto-create from import</div>
-            <div className="mt-3 flex items-center justify-between">
-              <div className="text-sm text-slate-700">Create missing accounts/hotels during paste</div>
-              <input type="checkbox" checked={state.settings.autoCreateFromImport} onChange={(e) => setSettings({ autoCreateFromImport: (e.target as HTMLInputElement).checked })} />
-            </div>
-          </div>
-
-          <div className="border border-slate-200 rounded-xl p-4 bg-white">
-            <div className="text-xs text-slate-500 font-bold uppercase">Auto-write TECH blocks</div>
-            <div className="mt-3 flex items-center justify-between">
-              <div className="text-sm text-slate-700">When TECH triggers, force manual block</div>
-              <input type="checkbox" checked={state.settings.autoWriteTechBlocks} onChange={(e) => setSettings({ autoWriteTechBlocks: (e.target as HTMLInputElement).checked })} />
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            onClick={() => {
-              setSettingsOpen(false);
-              pushToast("ok", "Saved", "Rules updated.");
-            }}
-            className="bg-blue-600 hover:bg-blue-500 text-slate-900 px-4 py-2 rounded-xl font-bold"
-          >
-            Done
-          </button>
+          {(!state.audit || state.audit.length === 0) && <div className="text-xs text-zinc-600">No audit events yet.</div>}
         </div>
       </Modal>
 
-      <Modal open={importOpen} title="Import JSON (restore database)" onClose={() => setImportOpen(false)} themeMode={themeMode}>
-        <div className="space-y-4">
-          <div className="text-xs text-slate-500">
-            Формат: экспорт из кнопки <b>Export JSON</b>. Можно вставить JSON или выбрать файл.
+      <Modal open={rewardDetailOpen} title="Reward Detail Console" onClose={() => setRewardDetailOpen(false)}>
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-[#0F0F0F] border border-[#222] rounded-sm p-4">
+              <div className="text-xs text-zinc-500 uppercase tracking-widest">Account</div>
+              <div className="text-sm text-white font-mono mt-1">{rewardDetailAccount || "—"}</div>
+              <div className="text-xs text-zinc-500 mt-2">
+                Status: <span className={rewardAccount?.isBlocked ? "text-red-400" : "text-green-400"}>{rewardAccount?.isBlocked ? "BLOCKED" : "ACTIVE"}</span>
+              </div>
+              <div className="text-xs text-zinc-500 mt-1">Tier: <span className="text-white">{rewardAccount?.tier || "Standard"}</span></div>
+            </div>
+            <div className="bg-[#0F0F0F] border border-[#222] rounded-sm p-4">
+              <div className="text-xs text-zinc-500 uppercase tracking-widest">Pending Rewards</div>
+              <div className="text-2xl text-green-400 font-bold mt-1">{money(rewardAccountPendingTotal)}</div>
+              <div className="text-xs text-zinc-500 mt-1">{rewardAccountPending.length} upcoming rewards</div>
+            </div>
+            <div className="bg-[#0F0F0F] border border-[#222] rounded-sm p-4">
+              <div className="text-xs text-zinc-500 uppercase tracking-widest">Future Balance</div>
+              <div className="text-2xl text-white font-bold mt-1">{money(rewardFutureBalance)}</div>
+              <div className="text-xs text-zinc-500 mt-1">Current {money(rewardAccount?.netBalance || 0)}</div>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-            <input
-              type="file"
-              accept="application/json"
-              onChange={(e) => {
-                const file = (e.target as HTMLInputElement).files?.[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = () => setImportPayload(String(reader.result || ""));
-                reader.readAsText(file);
-              }}
-              className="text-xs text-slate-500"
-            />
-            <button
-              onClick={() => {
-                try {
-                  const parsed = JSON.parse(importPayload || "{}");
-                  handleImport(parsed);
-                  setImportOpen(false);
-                } catch (err: any) {
-                  setImportError(err?.message || "Import failed");
-                }
-              }}
-              className="px-3 py-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 text-xs font-bold"
-            >
-              Import now
-            </button>
-          </div>
-          <textarea
-            className="w-full bg-white border border-slate-200 rounded-xl p-4 text-xs font-mono text-slate-700 focus:border-indigo-500 outline-none min-h-[200px]"
-            placeholder="Paste JSON export here..."
-            value={importPayload}
-            onChange={(e) => setImportPayload((e.target as HTMLTextAreaElement).value)}
-          />
-          {importError && <div className="text-xs text-rose-300">{importError}</div>}
-        </div>
-      </Modal>
 
-      {/* Audit */}
-      <Modal open={auditOpen} title="Audit Log (last 400 events)" onClose={() => setAuditOpen(false)} themeMode={themeMode}>
-        <div className="text-xs text-slate-500 mb-3">Это твой “журнал операций”: импорты, RawData, автосоздания, дедупы, ошибки парсинга, авто-блоки.</div>
-        <div className="border border-slate-200 rounded-xl overflow-hidden">
-          <div className="max-h-[60vh] overflow-auto">
-            <table className="w-full text-left text-xs text-slate-500">
-              <thead className="sticky top-0 bg-white text-slate-500 uppercase">
-                <tr>
-                  <th className="px-4 py-3">Time</th>
-                  <th className="px-4 py-3">Type</th>
-                  <th className="px-4 py-3">Message</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {[...(state.audit || [])]
-                  .slice()
-                  .reverse()
-                  .map((e: any) => (
-                    <tr key={e.id} className="hover:bg-slate-50">
-                      <td className="px-4 py-3 text-slate-500">{new Date(e.at).toLocaleString()}</td>
-                      <td className="px-4 py-3 font-mono text-slate-600">{e.type}</td>
-                      <td className="px-4 py-3 text-slate-700">{e.msg}</td>
-                    </tr>
-                  ))}
-                {(state.audit || []).length === 0 && (
-                  <tr>
-                    <td colSpan={3} className="px-4 py-8 text-center text-slate-500">Empty audit.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal open={bookingDupOpen} title="Booking Duplicates (BookingNo + PIN)" onClose={() => setBookingDupOpen(false)} themeMode={themeMode}>
-        <div className="text-xs text-slate-500 mb-3">Дубликаты по BookingNo и PIN (PIN приводится к 4 цифрам).</div>
-        <div className="border border-slate-200 rounded-xl overflow-hidden">
-          <div className="max-h-[60vh] overflow-auto">
-            <table className="w-full text-left text-xs text-slate-500">
-              <thead className="sticky top-0 bg-white text-slate-500 uppercase">
-                <tr>
-                  <th className="px-4 py-3">Email</th>
-                  <th className="px-4 py-3">BookingNo</th>
-                  <th className="px-4 py-3">PIN</th>
-                  <th className="px-4 py-3">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {bookingDupRows.map((b: any) => (
-                  <tr key={b.bookingId} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 text-slate-700">{b.email}</td>
-                    <td className="px-4 py-3 font-mono text-slate-700">{b.bookingNo}</td>
-                    <td className="px-4 py-3 font-mono text-slate-700">{String(b.pin || "").padStart(4, "0")}</td>
-                    <td className="px-4 py-3 text-slate-600">{b.status}</td>
-                  </tr>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div className="bg-[#0F0F0F] border border-[#222] rounded-sm p-4">
+              <div className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Pending Rewards</div>
+              <div className="space-y-2">
+                {rewardAccountPending.map((b: any) => (
+                  <div key={b.bookingId} className="flex items-center justify-between border border-[#222] rounded-sm px-3 py-2">
+                    <div>
+                      <div className="text-xs text-white font-mono">{b.bookingNo}</div>
+                      <div className="text-[10px] text-zinc-500">ETA {b.eta}</div>
+                    </div>
+                    <div className="text-xs text-green-400 font-mono">{money(b.rewardAmount)}</div>
+                  </div>
                 ))}
-                {bookingDupRows.length === 0 && (
-                  <tr>
-                    <td colSpan={4} className="px-4 py-8 text-center text-slate-500">No duplicates found.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal open={chainModalOpen} title={`Chain: ${chainModalName || ""}`} onClose={() => setChainModalOpen(false)} themeMode={themeMode}>
-        <div className="text-xs text-slate-500 mb-3">Hotels ranked by lowest cancellation rate.</div>
-        <div className="border border-slate-200 rounded-xl overflow-hidden">
-          <div className="max-h-[60vh] overflow-auto">
-            <table className="w-full text-left text-xs text-slate-500">
-              <thead className="sticky top-0 bg-white text-slate-500 uppercase">
-                <tr>
-                  <th className="px-4 py-3">Hotel</th>
-                  <th className="px-4 py-3">Cancel rate</th>
-                  <th className="px-4 py-3">Total</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {(chainHotels[chainModalName] || []).map((h: any, idx: number) => (
-                  <tr key={`${h.name}-${idx}`} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 text-slate-700">{h.name}</td>
-                    <td className="px-4 py-3 text-slate-700">{h.cancelRate}%</td>
-                    <td className="px-4 py-3 text-slate-700">{h.total}</td>
-                  </tr>
-                ))}
-                {(!chainModalName || (chainHotels[chainModalName] || []).length === 0) && (
-                  <tr>
-                    <td colSpan={3} className="px-4 py-8 text-center text-slate-500">No hotels found.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal
-        open={!!rewardModalEmail}
-        title={`Account: ${rewardModalEmail || ""}`}
-        onClose={() => setRewardModalEmail(null)}
-        themeMode={themeMode}
-      >
-        {rewardModalEmail ? (
-          <div className="space-y-6">
-            <div className="text-xs text-slate-500">
-              {(() => {
-                const list = state.bookings.filter((b: any) => safeLower(b.email) === safeLower(rewardModalEmail));
-                const total = list.length;
-                const cancelled = list.filter((b: any) => b.status === "Cancelled").length;
-                const confirmed = list.filter((b: any) => b.status === "Confirmed").length;
-                const completed = list.filter((b: any) => b.status === "Completed").length;
-                return `Bookings: ${total} • Confirmed ${confirmed} • Completed ${completed} • Cancelled ${cancelled}`;
-              })()}
-            </div>
-            <div className="text-xs text-slate-500">Bookings</div>
-            <div className="border border-slate-200 rounded-xl overflow-hidden">
-              <div className="max-h-[40vh] overflow-auto">
-                <table className="w-full text-left text-xs text-slate-500">
-                  <thead className="sticky top-0 bg-white text-slate-500 uppercase">
-                    <tr>
-                      <th className="px-4 py-3">Date</th>
-                      <th className="px-4 py-3">Hotel</th>
-                      <th className="px-4 py-3">Status</th>
-                      <th className="px-4 py-3">Reward ETA</th>
-                      <th className="px-4 py-3">Reward</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {state.bookings
-                      .filter((b: any) => safeLower(b.email) === safeLower(rewardModalEmail))
-                      .map((b: any) => (
-                        <tr key={b.bookingId} className="hover:bg-slate-50">
-                          <td className="px-4 py-3 text-slate-700">{b.createdAt}</td>
-                          <td className="px-4 py-3 text-slate-700">{b.hotelNameSnapshot}</td>
-                          <td className="px-4 py-3 text-slate-600">{b.status}</td>
-                          <td className="px-4 py-3 text-slate-600">{computeRewardETA(b, state.settings) || "—"}</td>
-                          <td className="px-4 py-3 text-slate-700">{b.rewardAmount ? money(b.rewardAmount) : "—"}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+                {rewardAccountPending.length === 0 && <div className="text-xs text-zinc-600">No pending rewards.</div>}
               </div>
             </div>
-
-            <div className="text-xs text-slate-500">Spent</div>
-            <div className="border border-slate-200 rounded-xl overflow-hidden">
-              <div className="max-h-[30vh] overflow-auto">
-                <table className="w-full text-left text-xs text-slate-500">
-                  <thead className="sticky top-0 bg-white text-slate-500 uppercase">
-                    <tr>
-                      <th className="px-4 py-3">Date</th>
-                      <th className="px-4 py-3">Amount</th>
-                      <th className="px-4 py-3">Note</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {state.sales
-                      .filter((s: any) => safeLower(s.email) === safeLower(rewardModalEmail))
-                      .map((s: any) => (
-                        <tr key={s.id} className="hover:bg-slate-50">
-                          <td className="px-4 py-3 text-slate-700">{s.date}</td>
-                          <td className="px-4 py-3 text-slate-700">{money(s.amount)}</td>
-                          <td className="px-4 py-3 text-slate-600">{s.note || "—"}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+            <div className="bg-[#0F0F0F] border border-[#222] rounded-sm p-4">
+              <div className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Account Booking Health</div>
+              <div className="flex items-center gap-4 text-xs text-zinc-500">
+                <span className="text-green-400">Positive: {rewardAccountPositive.length}</span>
+                <span className="text-red-400">Negative: {rewardAccountNegative.length}</span>
+              </div>
+              <div className="mt-3 space-y-2 max-h-56 overflow-y-auto custom-scrollbar">
+                {rewardAccountBookings.map((b: any) => (
+                  <div key={b.bookingId} className="flex items-center justify-between text-[10px] text-zinc-400 border border-[#222] rounded-sm px-3 py-2">
+                    <span>{b.bookingNo} • {b.status}</span>
+                    <span>{money(b.rewardAmount)}</span>
+                  </div>
+                ))}
+                {rewardAccountBookings.length === 0 && <div className="text-xs text-zinc-600">No bookings for this account.</div>}
               </div>
             </div>
           </div>
-        ) : null}
+        </div>
       </Modal>
-
-      <button
-        onClick={() => setSettingsOpen(true)}
-        className="fixed right-6 bottom-24 p-3 rounded-full shadow-lg bg-blue-600 text-white hover:bg-blue-500 z-40"
-        title="Settings"
-      >
-        <Settings size={18} />
-      </button>
-
-      {/* Toasts */}
-      <Toasts toasts={toasts} onDismiss={(id: string) => setToasts((p) => p.filter((t: any) => t.id !== id))} />
     </div>
   );
 }
