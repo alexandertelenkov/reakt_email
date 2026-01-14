@@ -103,6 +103,20 @@ function addDaysISO(iso: string, days: number) {
   return t.toISOString().slice(0, 10);
 }
 
+function isAfterDate(aISO: string, bISO: string) {
+  const a = parseDate(aISO);
+  const b = parseDate(bISO);
+  if (!a || !b) return false;
+  return a.getTime() > b.getTime();
+}
+
+function isOnOrAfterDate(aISO: string, bISO: string) {
+  const a = parseDate(aISO);
+  const b = parseDate(bISO);
+  if (!a || !b) return false;
+  return a.getTime() >= b.getTime();
+}
+
 const daysDiff = (fromISO: string, toISO = todayISO()) => {
   const a = parseDate(fromISO);
   const b = parseDate(toISO);
@@ -267,6 +281,24 @@ function computeRewardETA(b: any, settings: any) {
     ? Number(settings.rewardDaysBooking || 14)
     : Number(settings.rewardDaysOther || 64);
   return addDaysISO(checkOut, days);
+}
+
+function computeRewardPaidOn(b: any, settings: any) {
+  if (b.rewardPaidOn) return b.rewardPaidOn;
+  if (b.status === "Cancelled") return "";
+  const eta = computeRewardETA(b, settings);
+  if (!eta) return "";
+  return isOnOrAfterDate(todayISO(), eta) ? eta : "";
+}
+
+function getRewardMeta(b: any, settings: any) {
+  const eta = computeRewardETA(b, settings);
+  const paidOn = computeRewardPaidOn(b, settings);
+  const isCancelled = b.status === "Cancelled";
+  const eligibleStatus = b.status === "Confirmed" || b.status === "Completed";
+  const isPending = !isCancelled && eligibleStatus && !paidOn && eta && !isOnOrAfterDate(todayISO(), eta);
+  const isPaid = !isCancelled && !!paidOn;
+  return { eta, paidOn, isPending, isPaid };
 }
 
 function parseBookingLine(line: string, rewardTypes = DEFAULT_REWARD_TYPES) {
@@ -564,9 +596,10 @@ function deriveModel(state: any) {
     const cancelledBookings = accBookings.filter((b) => b.status === "Cancelled").length;
     const positiveBookings = accBookings.filter((b) => b.status !== "Cancelled").length;
 
-    const bonusEvents = accBookings.filter(
-      (b) => ((b.status === "Completed" && Number(b.rewardAmount || 0) > 0) || (b.rewardPaidOn && Number(b.rewardAmount || 0) > 0)) && !b._void
-    );
+    const bonusEvents = accBookings.filter((b) => {
+      const paidOn = computeRewardPaidOn(b, settings);
+      return !!paidOn && Number(b.rewardAmount || 0) > 0 && !b._void;
+    });
 
     const totalBonuses = bonusEvents.reduce((sum, b) => sum + Number(b.rewardAmount || 0), 0);
     const totalSales = accSales.reduce((sum, s) => sum + Number(s.amount || 0), 0);
@@ -591,7 +624,7 @@ function deriveModel(state: any) {
     let lastBonusPaidOn = "";
     if (bonusEvents.length > 0) {
       lastBonusPaidOn = bonusEvents
-        .map((b) => b.rewardPaidOn || b.createdAt)
+        .map((b) => computeRewardPaidOn(b, settings))
         .filter(Boolean)
         .sort((a, b) => (parseDate(b)?.getTime() || 0) - (parseDate(a)?.getTime() || 0))[0];
     }
@@ -777,6 +810,10 @@ export default function App() {
   const [rewardDetailOpen, setRewardDetailOpen] = useState(false);
   const [rewardDetailAccount, setRewardDetailAccount] = useState<string>("");
   const [rewardPasswordVisible, setRewardPasswordVisible] = useState<Record<string, boolean>>({});
+  const [rewardPendingFilters, setRewardPendingFilters] = useState({
+    noPendingPaidOnly: false,
+    minPaidTotal: "",
+  });
   const [selectedNextAction, setSelectedNextAction] = useState<Set<string>>(new Set());
   const [tableFilters, setTableFilters] = useState<Record<string, string>>({
     database: "",
@@ -890,8 +927,9 @@ export default function App() {
       map.set(key, { date: key, net: 0, earned: 0, spent: 0 });
     }
     for (const b of state.bookings) {
-      const key = (b.rewardPaidOn || b.createdAt || "").slice(0, 10);
-      if (map.has(key) && (b.status === "Completed" || b.rewardPaidOn) && Number(b.rewardAmount || 0) > 0) {
+      const paidOn = computeRewardPaidOn(b, state.settings);
+      const key = (paidOn || b.createdAt || "").slice(0, 10);
+      if (map.has(key) && paidOn && Number(b.rewardAmount || 0) > 0) {
         map.get(key)!.net += Number(b.rewardAmount || 0);
         map.get(key)!.earned += Number(b.rewardAmount || 0);
       }
@@ -1152,11 +1190,16 @@ export default function App() {
     ? model.derivedAccounts.find((a: any) => safeLower(a.email) === safeLower(rewardDetailAccount))
     : null;
   const rewardAccountBookings = rewardDetailAccount
-    ? state.bookings.filter((b: any) => safeLower(b.email) === safeLower(rewardDetailAccount))
+    ? state.bookings
+      .filter((b: any) => safeLower(b.email) === safeLower(rewardDetailAccount))
+      .map((b: any) => ({ ...b, ...getRewardMeta(b, state.settings) }))
     : [];
   const rewardAccountPending = rewardAccountBookings
-    .filter((b: any) => Number(b.rewardAmount || 0) > 0 && !b.rewardPaidOn)
-    .map((b: any) => ({ ...b, eta: computeRewardETA(b, state.settings) }));
+    .filter((b: any) => Number(b.rewardAmount || 0) > 0 && b.isPending);
+  const rewardAccountCompleted = rewardAccountBookings
+    .filter((b: any) => Number(b.rewardAmount || 0) > 0 && b.isPaid);
+  const rewardAccountCancelled = rewardAccountBookings
+    .filter((b: any) => b.status === "Cancelled");
   const rewardAccountPendingTotal = rewardAccountPending.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
   const rewardAccountPositive = rewardAccountBookings.filter((b: any) => b.status !== "Cancelled");
   const rewardAccountNegative = rewardAccountBookings.filter((b: any) => b.status === "Cancelled");
@@ -1492,6 +1535,7 @@ export default function App() {
                                 const acc = model.derivedAccounts.find((a: any) => a.emailKey === safeLower(b.email));
                                 const showPass = visiblePasswords[b.bookingId];
                                 const eta = computeRewardETA(b, state.settings);
+                                const paidOn = computeRewardPaidOn(b, state.settings);
                                 return (
                                 <tr key={b.bookingId} className="hover:bg-[#1A1A1A] transition-colors">
                                     <td className="px-6 py-3 text-xs font-mono text-zinc-500 align-top">{b.createdAt}</td>
@@ -1547,8 +1591,8 @@ export default function App() {
                                                 )}
                                             </div>
                                             <div className="text-[10px] text-zinc-500 font-mono mb-0.5">{b.rewardType} {b.airline && `(${b.airline})`}</div>
-                                            <div className={`text-[10px] font-mono ${b.rewardPaidOn ? "text-green-500" : "text-zinc-600"}`}>
-                                                {b.rewardPaidOn ? `PAID: ${b.rewardPaidOn}` : `ETA: ${eta}`}
+                                            <div className={`text-[10px] font-mono ${paidOn ? "text-green-500" : "text-zinc-600"}`}>
+                                                {paidOn ? `PAID: ${paidOn}` : `ETA: ${eta}`}
                                             </div>
                                         </div>
                                     </td>
@@ -2109,14 +2153,15 @@ export default function App() {
   };
 
   const RewardView = () => {
-    const rewardRows = state.bookings.filter((b: any) => Number(b.rewardAmount || 0) > 0 || b.rewardPaidOn);
-    const paidRows = rewardRows.filter((b: any) => b.rewardPaidOn);
-    const pendingRows = rewardRows
-      .filter((b: any) => !b.rewardPaidOn)
-      .map((b: any) => ({ ...b, eta: computeRewardETA(b, state.settings) }));
-    const totalRewards = rewardRows.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
+    const rewardRows = state.bookings
+      .filter((b: any) => Number(b.rewardAmount || 0) > 0 || b.rewardPaidOn)
+      .map((b: any) => ({ ...b, ...getRewardMeta(b, state.settings) }));
+    const rewardEligible = rewardRows.filter((b: any) => b.status !== "Cancelled");
+    const paidRows = rewardRows.filter((b: any) => b.isPaid);
+    const pendingRows = rewardRows.filter((b: any) => b.isPending);
+    const totalRewards = rewardEligible.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
     const paidTotal = paidRows.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
-    const pendingTotal = totalRewards - paidTotal;
+    const pendingTotal = pendingRows.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
     const pendingCount = pendingRows.length;
     const spentAll = state.sales.reduce((sum: number, s: any) => sum + Number(s.amount || 0), 0);
     const promoAll = (state.specialRewards || []).reduce((sum: number, r: any) => sum + Number(r.amount || 0), 0);
@@ -2141,8 +2186,13 @@ export default function App() {
         const accountPending = pendingRows.filter((b: any) => safeLower(b.email) === acc.emailKey);
         const paidTotalAcc = accountPaid.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
         const pendingTotalAcc = accountPending.reduce((sum: number, b: any) => sum + Number(b.rewardAmount || 0), 0);
+        const nextEta = accountPending
+          .map((b: any) => b.eta)
+          .filter(Boolean)
+          .sort((a: string, b: string) => (parseDate(a)?.getTime() || 0) - (parseDate(b)?.getTime() || 0))[0] || "";
+        const nextPayoutDays = nextEta ? daysDiff(todayISO(), nextEta) : null;
         const lastPaidOn = accountPaid
-          .map((b: any) => b.rewardPaidOn)
+          .map((b: any) => b.paidOn)
           .filter(Boolean)
           .sort((a: string, b: string) => (parseDate(b)?.getTime() || 0) - (parseDate(a)?.getTime() || 0))[0] || "";
         const daysSinceLast = lastPaidOn ? daysDiff(lastPaidOn) : null;
@@ -2157,6 +2207,9 @@ export default function App() {
         } else if (paidTotalAcc >= 50 && paidTotalAcc < 200) {
           medal = "Bronze";
         }
+        if (acc.tier === "Platinum") {
+          medal = "Platinum";
+        }
         return {
           email: acc.email,
           emailKey: acc.emailKey,
@@ -2168,9 +2221,18 @@ export default function App() {
           daysSinceLast,
           medal,
           currentBalance: acc.netBalance,
+          nextEta,
+          nextPayoutDays,
         };
       })
       .filter((row) => row.paidTotal > 0 || row.pendingTotal > 0 || row.spentTotal > 0 || row.promoTotal > 0);
+
+    const minPaidTotal = Number(rewardPendingFilters.minPaidTotal || 0);
+    const rewardSummaryFiltered = rewardSummary.filter((row: any) => {
+      if (rewardPendingFilters.noPendingPaidOnly && !(row.pendingTotal === 0 && row.paidTotal > 0)) return false;
+      if (rewardPendingFilters.minPaidTotal && row.paidTotal < minPaidTotal) return false;
+      return true;
+    });
 
     const paidFiltered = rewardSummary.filter((row: any) => {
       if (!filterPaid) return true;
@@ -2254,6 +2316,8 @@ export default function App() {
                   <option value="promoTotal:asc">Promo ↑</option>
                   <option value="spentTotal:desc">Spent ↓</option>
                   <option value="spentTotal:asc">Spent ↑</option>
+                  <option value="nextPayoutDays:asc">Next Payout ↑</option>
+                  <option value="nextPayoutDays:desc">Next Payout ↓</option>
                   <option value="daysSinceLast:asc">Days Since Last ↑</option>
                   <option value="daysSinceLast:desc">Days Since Last ↓</option>
                 </select>
@@ -2269,6 +2333,7 @@ export default function App() {
                     <th className="px-6 py-3 text-right">Pending</th>
                     <th className="px-6 py-3 text-right">Promo</th>
                     <th className="px-6 py-3 text-right">Spent</th>
+                    <th className="px-6 py-3 text-right">Next Payout</th>
                     <th className="px-6 py-3 text-right">Balance</th>
                   </tr>
                 </thead>
@@ -2308,6 +2373,9 @@ export default function App() {
                       <td className="px-6 py-3 text-right text-xs font-mono text-yellow-300">{money(row.pendingTotal)}</td>
                       <td className="px-6 py-3 text-right text-xs font-mono text-blue-400">{money(row.promoTotal)}</td>
                       <td className="px-6 py-3 text-right text-xs font-mono text-rose-300">{money(row.spentTotal)}</td>
+                      <td className="px-6 py-3 text-right text-xs font-mono text-zinc-300">
+                        {row.nextEta ? `${row.nextPayoutDays ?? 0}d` : "—"}
+                      </td>
                       <td className="px-6 py-3 text-right text-xs font-mono text-white">{money(row.currentBalance)}</td>
                     </tr>
                       );
@@ -2315,7 +2383,7 @@ export default function App() {
                   ))}
                   {paidSorted.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="px-6 py-6 text-center text-xs text-zinc-600">No reward activity yet.</td>
+                      <td colSpan={8} className="px-6 py-6 text-center text-xs text-zinc-600">No reward activity yet.</td>
                     </tr>
                   )}
                 </tbody>
@@ -2384,6 +2452,68 @@ export default function App() {
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+
+        <div className="border border-[#333] bg-[#111] rounded-sm overflow-hidden">
+          <div className="bg-[#1A1A1A] border-b border-[#333] px-6 py-3 flex flex-wrap gap-3 items-center justify-between">
+            <div className="text-xs text-zinc-500 uppercase tracking-widest">Pending Filtered Accounts</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setRewardPendingFilters((prev) => ({ ...prev, noPendingPaidOnly: !prev.noPendingPaidOnly }))}
+                className={`px-3 py-1.5 rounded-sm text-[10px] uppercase tracking-widest border ${
+                  rewardPendingFilters.noPendingPaidOnly
+                    ? "bg-[#F40009] border-[#F40009] text-white"
+                    : "bg-[#0A0A0A] border-[#333] text-zinc-400 hover:text-white"
+                }`}
+              >
+                Show only no pending + paid
+              </button>
+              <div className="flex items-center gap-2 bg-[#0A0A0A] border border-[#333] rounded-sm px-2 py-1.5">
+                <span className="text-[10px] uppercase tracking-widest text-zinc-500">Paid ≥</span>
+                <input
+                  value={rewardPendingFilters.minPaidTotal}
+                  onChange={(e) => setRewardPendingFilters((prev) => ({ ...prev, minPaidTotal: e.target.value }))}
+                  placeholder="0"
+                  className="w-20 bg-transparent text-xs text-white outline-none placeholder:text-zinc-600"
+                />
+              </div>
+              <button
+                onClick={() => setRewardPendingFilters({ noPendingPaidOnly: false, minPaidTotal: "" })}
+                className="px-3 py-1.5 rounded-sm text-[10px] uppercase tracking-widest border border-[#333] text-zinc-400 hover:text-white"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div className="overflow-x-auto max-h-[45vh]">
+            <table className="w-full text-left text-sm text-zinc-400">
+              <thead className="bg-[#151515] text-[10px] uppercase font-bold text-zinc-500 sticky top-0">
+                <tr>
+                  <th className="px-6 py-3">Account</th>
+                  <th className="px-6 py-3 text-right">Paid</th>
+                  <th className="px-6 py-3 text-right">Pending</th>
+                  <th className="px-6 py-3 text-right">Next Payout</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#222]">
+                {rewardSummaryFiltered.map((row: any) => (
+                  <tr key={`pending-filter-${row.emailKey}`} className="hover:bg-[#1A1A1A] transition-colors">
+                    <td className="px-6 py-3 text-xs text-white font-mono">{row.email}</td>
+                    <td className="px-6 py-3 text-right text-xs font-mono text-green-400">{money(row.paidTotal)}</td>
+                    <td className="px-6 py-3 text-right text-xs font-mono text-yellow-300">{money(row.pendingTotal)}</td>
+                    <td className="px-6 py-3 text-right text-xs font-mono text-zinc-300">
+                      {row.nextEta ? `${row.nextPayoutDays ?? 0}d` : "—"}
+                    </td>
+                  </tr>
+                ))}
+                {rewardSummaryFiltered.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-6 text-center text-xs text-zinc-600">No accounts match filters.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -2794,15 +2924,16 @@ export default function App() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
             <div className="bg-[#0F0F0F] border border-[#222] rounded-sm p-4">
               <div className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Pending Rewards</div>
               <div className="space-y-2">
                 {rewardAccountPending.map((b: any) => (
                   <div key={b.bookingId} className="flex items-center justify-between border border-[#222] rounded-sm px-3 py-2">
                     <div>
-                      <div className="text-xs text-white font-mono">{b.bookingNo}</div>
-                      <div className="text-[10px] text-zinc-500">ETA {b.eta}</div>
+                      <div className="text-xs text-white font-mono">{b.hotelNameSnapshot || "—"}</div>
+                      <div className="text-[10px] text-zinc-500">{b.bookingNo} • Checkout {b.checkOut || "—"}</div>
+                      <div className="text-[10px] text-zinc-500">ETA {b.eta || "—"}</div>
                     </div>
                     <div className="text-xs text-green-400 font-mono">{money(b.rewardAmount)}</div>
                   </div>
@@ -2811,20 +2942,53 @@ export default function App() {
               </div>
             </div>
             <div className="bg-[#0F0F0F] border border-[#222] rounded-sm p-4">
-              <div className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Account Booking Health</div>
-              <div className="flex items-center gap-4 text-xs text-zinc-500">
-                <span className="text-green-400">Positive: {rewardAccountPositive.length}</span>
-                <span className="text-red-400">Negative: {rewardAccountNegative.length}</span>
-              </div>
-              <div className="mt-3 space-y-2 max-h-56 overflow-y-auto custom-scrollbar">
-                {rewardAccountBookings.map((b: any) => (
-                  <div key={b.bookingId} className="flex items-center justify-between text-[10px] text-zinc-400 border border-[#222] rounded-sm px-3 py-2">
-                    <span>{b.bookingNo} • {b.status}</span>
-                    <span>{money(b.rewardAmount)}</span>
+              <div className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Completed Rewards</div>
+              <div className="space-y-2">
+                {rewardAccountCompleted.map((b: any) => (
+                  <div key={b.bookingId} className="flex items-center justify-between border border-[#222] rounded-sm px-3 py-2">
+                    <div>
+                      <div className="text-xs text-white font-mono">{b.hotelNameSnapshot || "—"}</div>
+                      <div className="text-[10px] text-zinc-500">{b.bookingNo} • Checkout {b.checkOut || "—"}</div>
+                      <div className="text-[10px] text-zinc-500">Paid {b.paidOn || "—"}</div>
+                    </div>
+                    <div className="text-xs text-green-400 font-mono">{money(b.rewardAmount)}</div>
                   </div>
                 ))}
-                {rewardAccountBookings.length === 0 && <div className="text-xs text-zinc-600">No bookings for this account.</div>}
+                {rewardAccountCompleted.length === 0 && <div className="text-xs text-zinc-600">No completed rewards.</div>}
               </div>
+            </div>
+            <div className="bg-[#0F0F0F] border border-[#222] rounded-sm p-4">
+              <div className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Cancelled Rewards</div>
+              <div className="space-y-2">
+                {rewardAccountCancelled.map((b: any) => (
+                  <div key={b.bookingId} className="flex items-center justify-between border border-[#222] rounded-sm px-3 py-2">
+                    <div>
+                      <div className="text-xs text-white font-mono">{b.hotelNameSnapshot || "—"}</div>
+                      <div className="text-[10px] text-zinc-500">{b.bookingNo} • Checkout {b.checkOut || "—"}</div>
+                      <div className="text-[10px] text-red-400">Cancelled</div>
+                    </div>
+                    <div className="text-xs text-zinc-500 font-mono">{money(b.rewardAmount || 0)}</div>
+                  </div>
+                ))}
+                {rewardAccountCancelled.length === 0 && <div className="text-xs text-zinc-600">No cancelled rewards.</div>}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-[#0F0F0F] border border-[#222] rounded-sm p-4">
+            <div className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Account Booking Health</div>
+            <div className="flex items-center gap-4 text-xs text-zinc-500">
+              <span className="text-green-400">Positive: {rewardAccountPositive.length}</span>
+              <span className="text-red-400">Negative: {rewardAccountNegative.length}</span>
+            </div>
+            <div className="mt-3 space-y-2 max-h-56 overflow-y-auto custom-scrollbar">
+              {rewardAccountBookings.map((b: any) => (
+                <div key={b.bookingId} className="flex items-center justify-between text-[10px] text-zinc-400 border border-[#222] rounded-sm px-3 py-2">
+                  <span>{b.bookingNo} • {b.status} • {b.hotelNameSnapshot || "—"} • Checkout {b.checkOut || "—"}</span>
+                  <span>{money(b.rewardAmount)}</span>
+                </div>
+              ))}
+              {rewardAccountBookings.length === 0 && <div className="text-xs text-zinc-600">No bookings for this account.</div>}
             </div>
           </div>
         </div>
